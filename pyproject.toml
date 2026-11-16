@@ -1,0 +1,54 @@
+[project]
+name = "darzi"
+version = "0.1.0"
+description = "Turns a job post into a checked, approved résumé and cover letter."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kailash Thakur" }]
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/darzi"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+    "types-pyyaml>=6.0.12.20261111",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+# Markdown files are documents, not code. Do not format their code blocks.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "D"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+# Parsed YAML has no static types; these reports only add noise on `Any` data.
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
