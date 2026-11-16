@@ -1,0 +1,217 @@
+# Synthetic rules for tests. The ids and severities follow docs/SPEC.md section 10.
+schema_version: 1
+
+agents_hard_rules:
+  1:
+    title: Only the public contact data
+    entries: [public_contact, private_contact_patterns]
+  2:
+    title: No years-of-experience count
+    entries: [years_patterns]
+  3:
+    title: No banned words or phrases
+    entries: [banned_words, banned_phrases, pronouns]
+  4:
+    title: No degree that was not completed
+    entries: [education_forbidden, credential_wording]
+  5:
+    title: No removed or doubtful items
+    entries: [removed_items, doubtful_items]
+  6:
+    title: No invented lead role
+    entries: [inflation_phrases]
+  7:
+    title: Titles, employers and dates equal the facts
+    entries: [titles, employer_of_record, not_working_periods]
+  8:
+    title: No invented numbers, names or technology
+    entries: [numbers_and_names, tech_terms, provenance, cover_letter_claims]
+  9:
+    title: Unpaid work stays unpaid
+    entries: [unpaid_projects, never_as_company]
+  10:
+    title: The owner approves each résumé
+    entries: []
+    not_checked: Only a signed approval at a terminal can show this.
+
+public_contact:
+  id: R-1
+  severity: error
+  reason: Only the public email and phone may appear.
+  email: test.person@example.com
+  phone: 555-0100
+
+private_contact_patterns:
+  id: R-1
+  severity: error
+  reason: Private contact data never leaves the machine.
+  terms:
+    - test.private@example.org
+    - 555-0199
+  regex:
+    any_email: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+    any_phone: '\(?\b[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b'
+
+privacy_patterns:
+  id: PV-3
+  severity: error
+  reason: Family and identity data never leaves the machine.
+  terms: [zorbek, quandrix, vexilt]
+  regex:
+    street_address: '\b[0-9]{1,5} [A-Z][a-z]+ (Street|Avenue|Road)\b'
+  allowed_bullet_ids: []
+
+banned_words:
+  id: R-3
+  severity: error
+  reason: These words add no fact.
+  terms: [spearheaded, leveraged, synergy, rockstar]
+
+banned_phrases:
+  id: R-3
+  severity: error
+  reason: These phrases add no fact.
+  terms: [results-driven, passionate about, proven track record]
+
+inflation_phrases:
+  id: R-7
+  severity: error
+  reason: No source states a lead role.
+  terms: [led the, managed a team, head of]
+  regex:
+    - '\bled (a|the) [a-z ]*team\b'
+
+pronouns:
+  id: R-4
+  severity: error
+  reason: Bullets, summary and headline start with a verb.
+  terms: [I, me, my, we, our]
+  allowed_in: []
+
+years_patterns:
+  id: R-2
+  severity: error
+  reason: Role dates show time. A years count is a claim.
+  regex:
+    - '\b[0-9]+\+? years?\b'
+    - '\b(one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty) years?\b'
+
+education_forbidden:
+  id: R-5
+  severity: error
+  reason: The owner did not complete a master's degree.
+  terms: [master's degree, M.S., M.A., MS in, MA in]
+  coursework_label: Coursework
+
+credential_wording:
+  id: R-5
+  severity: error
+  reason: A credential uses its exact wording.
+  items:
+    - term: certificate
+      forbidden: [certified]
+      allowed: [certificate in]
+
+removed_items:
+  id: R-6
+  severity: error
+  reason: The owner removed these items.
+  terms: [Paper Crane Club]
+  skills: [Flash]
+
+doubtful_items:
+  id: R-6
+  severity: error
+  reason: The owner is not sure of these items.
+  terms: [Night Shift Award]
+  bullet_ids: []
+  skills: []
+
+titles:
+  id: R-8
+  severity: error
+  reason: A title equals the title in the facts.
+
+employer_of_record:
+  id: R-9
+  severity: error
+  reason: Show the real employer, and who placed the owner.
+  terms: [Initech Staffing]
+  required_any:
+    globex: [Initech, contract]
+
+not_working_periods:
+  id: R-10
+  severity: error
+  reason: Dates equal the facts. No role fills a period with no work.
+  applies_to: [roles]
+  periods:
+    - from: 2018-01
+      to: 2019-01
+      source: confirmed
+
+exclude_from:
+  id: R-11
+  severity: error
+  reason: An item excluded for this job type must not appear.
+
+same_shape:
+  id: R-12
+  severity: error
+  reason: The same entries and the same bullet count as the base.
+
+numbers_and_names:
+  id: R-13
+  severity: error
+  reason: Each number and name comes from a fact.
+  allowed_words: [Figma]
+
+never_as_company:
+  id: R-14
+  severity: error
+  reason: These names were never a company.
+  terms: [Test Person Design LLC]
+  freelance_only: [freelance-design]
+
+unpaid_projects:
+  id: R-15
+  severity: error
+  reason: Unpaid projects stay under projects and never read as paid work.
+
+unverified_bullets:
+  id: R-16
+  severity: warning
+  reason: The owner did not verify this bullet.
+
+open_questions:
+  id: R-17
+  severity: error
+  reason: An open question names this fact.
+
+page_count:
+  id: R-18
+  severity: warning
+  reason: The file has more pages than the selection permits.
+
+skills:
+  id: R-19
+  severity: error
+  reason: Each skill is an exact skill name in the facts.
+
+provenance:
+  id: R-20
+  severity: error
+  reason: Each bullet comes from one source fact.
+  similarity_threshold: 0.5
+
+tech_terms:
+  id: R-21
+  severity: error
+  reason: Each technology name comes from a fact.
+  terms: [React, Swift, Kubernetes, Python, AWS]
+
+cover_letter_claims:
+  id: R-22
+  severity: error
+  reason: The letter names only public facts or words from the job post.
+  allowed_words: []

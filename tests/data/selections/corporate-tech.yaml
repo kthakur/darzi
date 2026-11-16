@@ -1,0 +1,25 @@
+# Synthetic selection for a corporate technology job. Fact ids only.
+schema_version: 1
+type: corporate-tech
+tier: 2
+headline: UX Researcher
+summary_basis: [acme-research]
+section_order:
+  - [personalInfo, Personal Info]
+  - [summary, Summary]
+  - [workExperience, Experience]
+  - [education, Education]
+  - [additional, Skills]
+work:
+  - id: acme
+    bullets: [acme-research, acme-checkout]
+  - id: globex
+    bullets: [globex-portal]
+projects: []
+education: [example-u-ba]
+skills: [User research, Usability testing, Figma]
+max_pages: 1
+# Ignored by darzi (docs/SPEC.md section 7). The schema still requires it.
+approval:
+  date: null
+  content_hash: null

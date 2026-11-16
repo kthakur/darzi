@@ -1,0 +1,209 @@
+# Synthetic fact file for tests. Every person, company and school is invented.
+source_files:
+  resume-2024: Test resume, 2024 version
+  resume-2019: Test resume, 2019 version
+  confirmed: Facts the owner confirmed
+
+profile:
+  name: Test Person
+  location: Springfield, ST
+  email: test.person@example.com
+  phone: 555-0100
+  links:
+    - label: Portfolio
+      url: https://portfolio.example.com
+      sources: [resume-2024]
+  contact_verified: true
+  contact_sources: [confirmed]
+  notes: Synthetic profile.
+  headlines:
+    - text: Product Designer
+      sources: [resume-2024]
+    - text: UX Researcher
+      sources: [resume-2019]
+  residence:
+    - place: Springfield, ST
+      from: 2019-06
+      until: present
+    - place: Shelbyville, ST
+      from: 2010-01
+      until: 2019-05
+  workforce_start: "2010"
+  experience_claims_policy: Role dates show time. No years count.
+  experience_claims:
+    - text: Designs web and mobile products.
+      sources: [resume-2024]
+  availability_notes:
+    - text: Available for full-time work.
+      sources: [confirmed]
+
+roles:
+  - id: acme
+    org: Acme Corporation
+    display_org: Acme
+    title: Senior Product Designer
+    location: Springfield, ST
+    start: 2021-03
+    end: present
+    type: employee
+    verified: true
+    verified_fields: [org, title, start, end]
+    sources: [resume-2024]
+    notes: Synthetic employee role.
+    alt_titles: [Product Designer]
+    positions:
+      - title: Product Designer
+        start: 2021-03
+        end: 2022-12
+      - title: Senior Product Designer
+        start: 2023-01
+        end: present
+    bullets:
+      - id: acme-checkout
+        text: Designed a new checkout flow that cut drop-off by 12%.
+        tags: [ux, retail]
+        evidence: https://portfolio.example.com/checkout
+        verified: true
+        sources: [resume-2024]
+      - id: acme-design-system
+        text: Built a design system in Figma with 40 shared components.
+        tags: [ux, build]
+        evidence: ""
+        verified: true
+        sources: [resume-2024]
+      - id: acme-research
+        text: Ran 20 user interviews to shape the account settings pages.
+        tags: [research, ux]
+        evidence: ""
+        verified: false
+        sources: [resume-2024]
+      - id: acme-accessibility
+        text: Audited the web store for accessibility problems.
+        tags: [ux]
+        evidence: ""
+        verified: false
+        sources: [resume-2024]
+
+  - id: globex
+    org: Globex Corporation
+    display_org: Globex
+    title: UX Designer
+    location: Shelbyville, ST
+    start: 2019-02
+    end: 2021-01
+    type: contract
+    verified: true
+    verified_fields: [org, start, end]
+    sources: [resume-2019, resume-2024]
+    notes: Placed at Globex by Initech Staffing.
+    bullets:
+      - id: globex-portal
+        text: Designed the partner portal in React with the engineering team.
+        tags: [ux, enterprise]
+        evidence: ""
+        verified: true
+        sources: [resume-2019]
+      - id: globex-support
+        text: Rewrote 30 help articles for the support center.
+        tags: [content, support]
+        evidence: ""
+        verified: true
+        sources: [resume-2019]
+        exclude_from: [corporate-tech]
+
+  - id: freelance-design
+    org: Freelance design
+    title: Designer
+    location: Shelbyville, ST
+    start: 2016
+    end: 2017
+    type: independent
+    verified: false
+    verified_fields: []
+    sources: [resume-2019]
+    notes: Informal freelance work for small shops.
+    bullets:
+      - id: freelance-shop-sites
+        text: Made websites for five local shops.
+        tags: [smb, build]
+        evidence: ""
+        verified: false
+        sources: [resume-2019]
+
+  - id: vandelay
+    org: Vandelay Industries
+    title: Support Specialist
+    location: Shelbyville, ST
+    start: 2010-01
+    end: 2015-12
+    type: employee
+    verified: true
+    verified_fields: [org, title]
+    sources: [resume-2019]
+    notes: Older role. Left out of the corporate résumé.
+    exclude_from: [corporate-tech]
+    bullets:
+      - id: vandelay-tickets
+        text: Answered customer tickets by phone and email.
+        tags: [support]
+        evidence: ""
+        verified: true
+        sources: [resume-2019]
+
+projects:
+  - id: plant-app
+    org: Independent
+    title: Plant Care App
+    location: ""
+    start: 2024
+    end: ""
+    type: independent
+    verified: false
+    verified_fields: [unpaid]
+    sources: [resume-2024]
+    notes: Unpaid side project.
+    alt_names: [Leafy]
+    bullets:
+      - id: plant-app-build
+        text: Built a plant care app in Swift with reminders.
+        tags: [build, ux]
+        evidence: https://portfolio.example.com/plant-app
+        verified: false
+        sources: [resume-2024]
+
+education:
+  - id: example-u-ba
+    institution: Example University
+    credential: B.A. Graphic Design
+    status: completed
+    start: 2006
+    end: 2009-05
+    verified: true
+    sources: [confirmed]
+  - id: example-state-hci
+    institution: Example State University School of Continuing Professional Studies
+    display_institution: Example State University
+    credential: Human-Computer Interaction
+    status: coursework
+    start: 2020-09
+    end: 2021-06
+    verified: true
+    sources: [confirmed]
+    notes: Coursework only. No degree.
+
+skills:
+  - name: Figma
+    tags: [design-tool]
+    sources: [resume-2024]
+  - name: User research
+    tags: [method]
+    sources: [resume-2024]
+  - name: React
+    tags: [frontend]
+    sources: [resume-2019]
+  - name: Swift
+    tags: [mobile]
+    sources: [resume-2024]
+  - name: Usability testing
+    tags: [method]
+    sources: [resume-2019]

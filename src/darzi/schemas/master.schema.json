@@ -1,0 +1,550 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "master.schema.json",
+  "title": "master.yaml",
+  "description": "The owner's career facts.",
+  "type": "object",
+  "required": [
+    "source_files",
+    "profile",
+    "roles",
+    "projects",
+    "education",
+    "skills"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "source_files": {
+      "description": "Short source id -> description of the real source.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "profile": {
+      "$ref": "#/$defs/profile"
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/role"
+      }
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/project"
+      }
+    },
+    "education": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/education"
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skill"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "description": "Lowercase, hyphenated.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "date": {
+      "description": "YYYY-MM, YYYY, \"present\" or \"\" (unknown). A bare YAML year (1992) is YYYY.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^([0-9]{4}(-(0[1-9]|1[0-2]))?|present|)$"
+        },
+        {
+          "type": "integer",
+          "minimum": 1900,
+          "maximum": 2100
+        }
+      ]
+    },
+    "sources": {
+      "description": "Each entry is a key of source_files (checked in code).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "entry_type": {
+      "description": "The kind of work.",
+      "enum": [
+        "employee",
+        "contract",
+        "consulting",
+        "own-business",
+        "independent",
+        "other"
+      ]
+    },
+    "bullet_tag": {
+      "description": "Bullet tags: a base set plus the coverage tags.",
+      "enum": [
+        "ux",
+        "enterprise",
+        "ai",
+        "build",
+        "service-design",
+        "smb",
+        "research",
+        "content",
+        "video",
+        "elearning",
+        "retail",
+        "support",
+        "data",
+        "infra"
+      ]
+    },
+    "exclude_from": {
+      "description": "Variant types that must leave the item out.",
+      "type": "array",
+      "items": {
+        "enum": [
+          "corporate-tech",
+          "all"
+        ]
+      }
+    },
+    "text_with_sources": {
+      "type": "object",
+      "required": [
+        "text",
+        "sources"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": [
+        "name",
+        "email",
+        "phone",
+        "headlines"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "url",
+              "sources"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "sources": {
+                "$ref": "#/$defs/sources"
+              }
+            }
+          }
+        },
+        "contact_verified": {
+          "type": "boolean"
+        },
+        "contact_sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "headlines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text_with_sources"
+          }
+        },
+        "residence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "place",
+              "until"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "place": {
+                "type": "string"
+              },
+              "from": {
+                "$ref": "#/$defs/date"
+              },
+              "until": {
+                "$ref": "#/$defs/date"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "workforce_start": {
+          "type": "string"
+        },
+        "computing_background": {
+          "type": "string"
+        },
+        "experience_claims_policy": {
+          "type": "string"
+        },
+        "experience_claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text_with_sources"
+          }
+        },
+        "availability_notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text_with_sources"
+          }
+        }
+      }
+    },
+    "bullet": {
+      "type": "object",
+      "required": [
+        "id",
+        "text",
+        "tags",
+        "evidence",
+        "sources"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bullet_tag"
+          }
+        },
+        "evidence": {
+          "description": "A URL that the owner supplied, or empty.",
+          "type": "string",
+          "pattern": "^(https?://\\S+)?$"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "exclude_from": {
+          "$ref": "#/$defs/exclude_from"
+        }
+      }
+    },
+    "role": {
+      "description": "A job.",
+      "type": "object",
+      "required": [
+        "id",
+        "org",
+        "title",
+        "location",
+        "start",
+        "end",
+        "type",
+        "verified",
+        "verified_fields",
+        "sources",
+        "notes",
+        "bullets"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "org": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_org": {
+          "description": "Short print name. The owner chooses it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "type": "string"
+        },
+        "start": {
+          "$ref": "#/$defs/date"
+        },
+        "end": {
+          "$ref": "#/$defs/date"
+        },
+        "type": {
+          "$ref": "#/$defs/entry_type"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "verified_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "bullets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bullet"
+          }
+        },
+        "exclude_from": {
+          "$ref": "#/$defs/exclude_from"
+        },
+        "alt_titles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "start",
+              "end"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start": {
+                "$ref": "#/$defs/date"
+              },
+              "end": {
+                "$ref": "#/$defs/date"
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "project": {
+      "description": "Unpaid or own work.",
+      "type": "object",
+      "required": [
+        "id",
+        "org",
+        "title",
+        "location",
+        "start",
+        "end",
+        "type",
+        "verified",
+        "verified_fields",
+        "sources",
+        "notes",
+        "bullets"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "org": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_org": {
+          "description": "Short print name. The owner chooses it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "type": "string"
+        },
+        "start": {
+          "$ref": "#/$defs/date"
+        },
+        "end": {
+          "$ref": "#/$defs/date"
+        },
+        "type": {
+          "$ref": "#/$defs/entry_type"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "verified_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "bullets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bullet"
+          }
+        },
+        "exclude_from": {
+          "$ref": "#/$defs/exclude_from"
+        },
+        "alt_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "education": {
+      "type": "object",
+      "required": [
+        "id",
+        "institution",
+        "credential",
+        "status",
+        "end",
+        "verified",
+        "sources"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "institution": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_institution": {
+          "description": "Short print name. The owner chooses it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "credential": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "coursework"
+          ]
+        },
+        "start": {
+          "$ref": "#/$defs/date"
+        },
+        "end": {
+          "$ref": "#/$defs/date"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "skill": {
+      "description": "Flat list; not ranked or pruned. Skill tags are free text.",
+      "type": "object",
+      "required": [
+        "name",
+        "tags",
+        "sources"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        }
+      }
+    }
+  }
+}

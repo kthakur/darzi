@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "answers.schema.json",
+  "title": "Standard answers for application forms",
+  "description": "The owner writes each answer. Generic answers only. An empty answer leaves the form field empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "answers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "question", "answer"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"},
+          "question": {"type": "string", "minLength": 1},
+          "answer": {"type": "string"}
+        }
+      }
+    }
+  }
+}

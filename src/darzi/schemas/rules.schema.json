@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rules.schema.json",
+  "title": "rules.yaml",
+  "description": "The check rules as data. A term matches on word boundaries.",
+  "type": "object",
+  "required": [
+    "schema_version", "agents_hard_rules",
+    "public_contact", "private_contact_patterns", "banned_words", "banned_phrases",
+    "inflation_phrases", "pronouns", "years_patterns", "education_forbidden",
+    "credential_wording", "removed_items", "doubtful_items", "employer_of_record",
+    "not_working_periods", "never_as_company", "tech_terms"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "agents_hard_rules": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[1-9][0-9]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["title", "entries"],
+        "additionalProperties": false,
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "entries": {"type": "array", "items": {"type": "string"}},
+          "not_checked": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "additionalProperties": {"$ref": "#/$defs/rule"},
+  "$defs": {
+    "terms": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "date": {"type": "string", "pattern": "^[0-9]{4}(-(0[1-9]|1[0-2]))?$"},
+    "rule": {
+      "type": "object",
+      "required": ["id", "severity", "reason"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^(R|D|PV)-[0-9]+$"},
+        "severity": {"enum": ["error", "warning"]},
+        "reason": {"type": "string", "minLength": 1},
+        "terms": {"$ref": "#/$defs/terms"},
+        "regex": {
+          "anyOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "object", "additionalProperties": {"type": "string"}}
+          ]
+        },
+        "periods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "source"],
+            "additionalProperties": false,
+            "properties": {
+              "from": {"$ref": "#/$defs/date"},
+              "to": {"$ref": "#/$defs/date"},
+              "source": {"type": "string"}
+            }
+          }
+        },
+        "required_any": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/terms"}
+        }
+      }
+    }
+  }
+}
