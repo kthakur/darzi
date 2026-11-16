@@ -1,0 +1,15 @@
+#!/bin/sh
+# Git pre-push hook body. The hook in .git/hooks calls this file with the hook's
+# arguments and standard input. It runs the private-term scan with uv, so that
+# PyYAML is available. If uv is not found, the push stops.
+here=${0%/*}
+case $here in
+  /*) ;;
+  *) here="$PWD/$here" ;;
+esac
+if ! command -v uv >/dev/null 2>&1; then
+  echo "pre-push: uv is not found. Install uv and push again. Push stopped." >&2
+  exit 1
+fi
+exec uv run --quiet --frozen --project "$here/.." \
+  python "$here/privacy_scan.py" "$@"

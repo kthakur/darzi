@@ -364,12 +364,41 @@ Two privacy gates:
   and on a phone number outside the 555-0100 range.
 - **Before each push (private terms).** `scripts/pre-push` runs
   `scripts/privacy_scan.py`. The script reads the real data root from the
-  environment variable `DARZI_DATA_ROOT`. It builds a term list from
-  `rules.yaml` (contact data, private patterns, private terms) and from
-  `master.yaml` (each id, organization name and institution name). It scans the
-  files and the commit messages of the push. It has an allow-list for the word
-  "darzi" and for the owner's name in `LICENSE` and `pyproject.toml`. If
-  `DARZI_DATA_ROOT` is not set, the push fails.
+  environment variable `DARZI_DATA_ROOT`. If it is not set, the push fails.
+  `scripts/pre-push` runs the script with `uv`. If `uv` is not found, the push
+  fails. The term list comes from these sources:
+  - `rules.yaml`: the email and phone in `public_contact`;
+    `private_contact_patterns.terms`; `privacy_patterns.terms` and
+    `privacy_patterns.regex`; each word in each list of
+    `employer_of_record.required_any`, and `employer_of_record.terms`;
+    `never_as_company.terms`. The generic `any_*` patterns are not used.
+  - `master.yaml`: each `id`; `org` and `display_org` of each role and each
+    project; `alt_names` of each project; `institution` and
+    `display_institution`; from each entry in `profile.links`, only `url` (not
+    `label` or `sources`), as two terms: the full URL and the host name without
+    "www."; `profile.email`,
+    `profile.phone`; `profile.name` and each part of it.
+  - `privacy_scan_terms.txt` in the data root (the owner's file): one term for
+    each line. An absent file adds no terms.
+
+  No rule drops a term, also not a common word. A term matches with letter case
+  ignored, on word boundaries, and a space matches each run of white space. A
+  phone number matches on its last ten digits with any separators.
+
+  For each commit of the push that is not on the remote, the script scans the
+  commit message, the path of each added or changed file and the full content
+  of that file. It also scans the ref names of the push, and the tag name and
+  message of each annotated tag (not the tagger line, as it does not scan the
+  commit author). A finding gives the commit, the file and the line number,
+  never the term. An error message never quotes a data root file. The option `--show-terms` also shows the term. It is for the owner
+  only. The hook does not use it.
+
+  Allow-list: the word "darzi" in each letter case; the owner's name in
+  `LICENSE` and `pyproject.toml`; each line of `privacy_scan_allow.txt` in the
+  data root (the owner's file). An entry is case-sensitive and lets only that
+  exact form pass: "abc" lets "abc" pass, but not "Abc". An entry also lets a
+  regex finding pass when the found text is equal to the entry. An absent file
+  gives an empty list.
 
 CI runs on GitHub-hosted runners only. Never connect a self-hosted runner to
 this repo.
@@ -381,7 +410,7 @@ order. Each one leaves `main` with passing CI.
 
 | ID | Work | Done when |
 |---|---|---|
-| W-0 | Scaffold: uv project, the layout, CI, MIT licence, both privacy gates | CI passes. The pre-push hook stops a push that holds a term from the real data root. |
+| W-0 | Scaffold: uv project, the layout, CI, MIT licence, both privacy gates | CI passes. The scan stops a push that holds a term from a synthetic data root. The owner tested it with a real term. |
 | W-1 | Schemas as package data (with generic description texts), and the synthetic data root | Each synthetic file is valid against its schema. |
 | W-2 | Port `facts/`: repo, validate, rules, patterns, public, selection (hash only), export | Ported tests pass. `facts validate`, `public`, `query`, `export` work on `tests/data/`. |
 | W-3 | Port the checks: check, check_meta, check_provenance, check_structure | A pass and a fail test for each rule. The 14 cases give the table in section 10. |
