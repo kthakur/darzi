@@ -80,7 +80,10 @@ warnings:
 - Messages and docstrings in the source name the owner and one private term.
   Replace them with "the owner" and with data from `facts.toml`.
 - Four `description` texts in `schema/master.schema.json` name real things.
-  Write them again in generic words (work item W-1).
+  Write them again in generic words (work item W-1). The same applies to the
+  `description` of `schema/answers.schema.json`. Descriptions that point to
+  the old `SRS.md` or `AGENTS.md` lose the pointer and keep the meaning. Each
+  `$id` is the bare file name.
 
 ## 4. Layout
 
@@ -337,6 +340,35 @@ This check replaces the Resume Matcher parse score.
   `answers.yaml` and `questions.md` from the schemas.
 - Port each source test. Keep what it tests. Replace its data.
 - Each rule R-1 to R-22 has one passing and one failing test.
+- The rules and their `rules.yaml` keys. Each entry has this `id` and
+  `severity`:
+
+| Rule | `rules.yaml` keys | Severity |
+|---|---|---|
+| R-1 | `public_contact`, `private_contact_patterns` | error |
+| R-2 | `years_patterns` | error |
+| R-3 | `banned_words`, `banned_phrases` | error |
+| R-4 | `pronouns` | error |
+| R-5 | `education_forbidden`, `credential_wording` | error |
+| R-6 | `removed_items`, `doubtful_items` | error |
+| R-7 | `inflation_phrases` | error |
+| R-8 | `titles` | error |
+| R-9 | `employer_of_record` | error |
+| R-10 | `not_working_periods` | error |
+| R-11 | `exclude_from` | error |
+| R-12 | `same_shape` | error |
+| R-13 | `numbers_and_names` | error |
+| R-14 | `never_as_company` | error |
+| R-15 | `unpaid_projects` | error |
+| R-16 | `unverified_bullets` | warning |
+| R-17 | `open_questions` | error |
+| R-18 | `page_count` | warning |
+| R-19 | `skills` | error |
+| R-20 | `provenance` | error |
+| R-21 | `tech_terms` | error |
+| R-22 | `cover_letter_claims` | error |
+| PV-3 | `privacy_patterns` | error |
+
 - The 14 edit cases are fixtures. Build them as functions that edit the
   synthetic base:
 

@@ -1,0 +1,33 @@
+# Synthetic selection for a product design job. Fact ids only.
+schema_version: 1
+type: ux
+tier: 1
+headline: Product Designer
+summary_basis: [acme-checkout, acme-design-system]
+section_order:
+  - [personalInfo, Personal Info]
+  - [summary, Summary]
+  - [workExperience, Experience]
+  - [personalProjects, Projects]
+  - [education, Education]
+  - [additional, Skills]
+work:
+  - id: acme
+    bullets: [acme-checkout, acme-design-system, acme-research]
+  - id: globex
+    bullets: [globex-portal, globex-support]
+  - id: freelance-design
+    bullets: [freelance-shop-sites]
+  - id: vandelay
+    bullets: [vandelay-tickets]
+    condensed: true
+projects:
+  - id: plant-app
+    bullets: [plant-app-build]
+education: [example-u-ba, example-state-hci]
+skills: [Figma, User research, React, Swift]
+max_pages: 2
+# Ignored by darzi (docs/SPEC.md section 7). The schema still requires it.
+approval:
+  date: null
+  content_hash: null

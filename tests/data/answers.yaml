@@ -1,0 +1,21 @@
+# Synthetic standard answers for application forms.
+schema_version: 1
+answers:
+  - id: work_authorized_us
+    question: Are you legally authorized to work in the United States?
+    answer: "Yes"
+  - id: needs_sponsorship
+    question: Will you now or in the future require visa sponsorship?
+    answer: "No"
+  - id: current_location
+    question: Where are you located (city, state)?
+    answer: Springfield, ST
+  - id: willing_to_relocate
+    question: Are you willing to relocate?
+    answer: ""
+  - id: email
+    question: Email address
+    answer: test.person@example.com
+  - id: phone
+    question: Phone number
+    answer: 555-0100
