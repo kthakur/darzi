@@ -52,9 +52,13 @@ class Pattern:
 
 @dataclass(frozen=True)
 class Finding:
-    """One private match. `place` is a file path or "commit message"."""
+    """One private match.
 
-    commit: str
+    `source` is a commit, a tag object or "push". `place` is a file path,
+    "commit message", "ref name" or "tag text".
+    """
+
+    source: str
     place: str
     line: int
     found: str
@@ -133,7 +137,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise ScanError(f"{path.name} is not valid YAML. Correct it: {exc}") from exc
+        # The parser message can quote the file, so give only the position.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        raise ScanError(f"{path.name} is not valid YAML{where}. Correct it.") from None
     if not isinstance(data, dict):
         raise ScanError(f"{path.name} is not a YAML mapping. Correct it.")
     return data
@@ -267,26 +274,85 @@ def _git_bytes(*args: str) -> bytes:
     return result.stdout
 
 
-def new_commits(remote: str, push_lines: Iterable[str]) -> list[str]:
-    """Return each commit of the push that is not on `remote`, oldest first."""
-    commits: list[str] = []
-    for raw in push_lines:
+@dataclass(frozen=True)
+class PushLine:
+    """One line of the pre-push input."""
+
+    local_ref: str
+    local_sha: str
+    remote_ref: str
+    remote_sha: str
+
+
+def parse_push(push_lines: Iterable[str]) -> list[PushLine]:
+    """Return the push lines. An error message never quotes a line."""
+    result: list[PushLine] = []
+    for number, raw in enumerate(push_lines, start=1):
         parts = raw.split()
         if not parts:
             continue
         if len(parts) != 4:
-            raise ScanError(f"Unexpected pre-push input line: {raw.strip()!r}.")
-        _, local_sha, _, remote_sha = parts
-        if local_sha == ZERO_SHA:
+            raise ScanError(f"pre-push input line {number} does not have 4 fields.")
+        result.append(PushLine(*parts))
+    return result
+
+
+def peel(sha: str) -> tuple[list[str], str]:
+    """Return the tag objects on the way from `sha` to its target, and the target."""
+    tags: list[str] = []
+    while _git("cat-file", "-t", sha).strip() == "tag":
+        tags.append(sha)
+        header = _git("cat-file", "tag", sha).split("\n", 1)[0].split()
+        if len(header) != 2 or header[0] != "object":
+            raise ScanError(f"tag object {sha[:12]} has no target. Check the tag.")
+        sha = header[1]
+    return tags, sha
+
+
+def new_commits(remote: str, push: Iterable[PushLine]) -> list[str]:
+    """Return each commit of the push that is not on `remote`, oldest first."""
+    commits: list[str] = []
+    for line in push:
+        if line.local_sha == ZERO_SHA:
             continue  # A delete sends no content.
+        _, target = peel(line.local_sha)
+        if _git("cat-file", "-t", target).strip() != "commit":
+            raise ScanError(
+                f"Object {line.local_sha[:12]} of the push is not a commit or a "
+                "tag on a commit. The scan cannot check it."
+            )
         exclude = [f"--remotes={remote}"]
-        if remote_sha != ZERO_SHA and _known(remote_sha):
-            exclude.append(remote_sha)
-        out = _git("rev-list", "--reverse", local_sha, "--not", *exclude)
+        if line.remote_sha != ZERO_SHA and _known(line.remote_sha):
+            exclude.append(line.remote_sha)
+        out = _git("rev-list", "--reverse", target, "--not", *exclude)
         for sha in out.split():
             if sha not in commits:
                 commits.append(sha)
     return commits
+
+
+def scan_refs(
+    push: Iterable[PushLine], patterns: list[Pattern], allow: frozenset[str]
+) -> list[Finding]:
+    """Return each finding in the ref names and the tag objects of the push."""
+    findings: list[Finding] = []
+    for line in push:
+        if line.local_sha == ZERO_SHA:
+            continue
+        for ref in dict.fromkeys((line.local_ref, line.remote_ref)):
+            for _, hit, label in scan_text(ref, patterns, allow, None):
+                findings.append(Finding("push", "ref name", 0, hit, label))
+        tags, _ = peel(line.local_sha)
+        for tag in tags:
+            # Scan the tag name and the message. Like the commit author, the
+            # tagger line is not scanned. Blank lines keep the line numbers.
+            header, _, message = _git("cat-file", "tag", tag).partition("\n\n")
+            kept = [h if h.startswith("tag ") else "" for h in header.split("\n")]
+            text = "\n".join(kept) + "\n\n" + message
+            for number, hit, label in scan_text(text, patterns, allow, None):
+                source = f"tag object {tag[:12]}"
+                findings.append(Finding(source, "tag text", number, hit, label))
+    return findings
 
 
 def _known(sha: str) -> bool:
@@ -317,7 +383,7 @@ def scan_commit(
     commit: str, patterns: list[Pattern], allow: frozenset[str]
 ) -> list[Finding]:
     """Return each finding in the message, the paths and the files of `commit`."""
-    short = commit[:12]
+    short = f"commit {commit[:12]}"
     findings: list[Finding] = []
     message = _git("log", "-1", "--format=%B", commit)
     for line, hit, label in scan_text(message, patterns, allow, None):
@@ -337,11 +403,11 @@ def report(findings: list[Finding], show_terms: bool) -> str:
     lines: list[str] = []
     seen: set[tuple[str, str, int]] = set()
     for f in findings:
-        key = (f.commit, f.place, f.line)
+        key = (f.source, f.place, f.line)
         if key in seen and not show_terms:
             continue
         seen.add(key)
-        where = f"commit {f.commit}, {f.place}"
+        where = f"{f.source}, {f.place}"
         if f.line:
             where += f", line {f.line}"
         text = f"privacy scan: {where}: private data."
@@ -380,8 +446,9 @@ def main(argv: list[str] | None = None, stdin: Iterable[str] | None = None) -> i
             raise ScanError("DARZI_DATA_ROOT is not a folder. Correct it.")
         patterns = build_patterns(root)
         allow = frozenset(_lines(root / ALLOW_FILE))
-        commits = new_commits(args.remote, stdin if stdin is not None else sys.stdin)
-        findings: list[Finding] = []
+        push = parse_push(stdin if stdin is not None else sys.stdin)
+        findings = scan_refs(push, patterns, allow)
+        commits = new_commits(args.remote, push)
         for commit in commits:
             findings.extend(scan_commit(commit, patterns, allow))
     except ScanError as exc:

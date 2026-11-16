@@ -408,3 +408,62 @@ def test_pre_push_fails_without_uv(repo: Repo, data_root: Path, tmp_path: Path) 
     )
     assert result.returncode == 1
     assert "uv is not found" in result.stderr
+
+
+def test_term_in_branch_name_fails(repo: Repo, data_root: Path) -> None:
+    repo.git("checkout", "-q", "-b", "orvanta-fix")
+    local = repo.commit({"a.md": "clean\n"})
+    result = run_scan(repo, data_root, [push_line(local, ZERO, "orvanta-fix")])
+    assert result.returncode == 1
+    assert "push, ref name: private data." in result.stderr
+    assert "orvanta" not in result.stderr.lower()
+
+
+def tag_line(repo: Repo, name: str) -> str:
+    sha = repo.git("rev-parse", f"refs/tags/{name}")
+    return f"refs/tags/{name} {sha} refs/tags/{name} {ZERO}"
+
+
+def test_term_in_annotated_tag_fails(repo: Repo, data_root: Path) -> None:
+    repo.git("tag", "-a", "v1", "-m", "Release for Orvanta.")
+    result = run_scan(repo, data_root, [tag_line(repo, "v1")])
+    assert result.returncode == 1
+    assert "tag text, line 6: private data." in result.stderr
+
+
+def test_term_in_nested_tag_fails(repo: Repo, data_root: Path) -> None:
+    repo.git("tag", "-a", "inner", "-m", "Release for Orvanta.")
+    repo.git("tag", "-a", "outer", "-m", "Clean outer tag.", "inner")
+    result = run_scan(repo, data_root, [tag_line(repo, "outer")])
+    assert result.returncode == 1
+    assert "tag text" in result.stderr
+
+
+def test_clean_annotated_tag_passes(repo: Repo, data_root: Path) -> None:
+    repo.git("tag", "-a", "v1", "-m", "Clean release.")
+    result = run_scan(repo, data_root, [tag_line(repo, "v1")])
+    assert result.returncode == 0, result.stderr
+
+
+def test_invalid_yaml_does_not_quote_the_file(repo: Repo, data_root: Path) -> None:
+    (data_root / "rules.yaml").write_text(
+        "terms: [Kestrelgate\nother: {", encoding="utf-8"
+    )
+    result = run_scan(repo, data_root, [push_line(repo.head(), repo.head())])
+    assert result.returncode == 1
+    assert "rules.yaml is not valid YAML at line" in result.stderr
+    assert "Kestrelgate" not in result.stderr
+
+
+def test_bad_push_line_is_not_quoted(repo: Repo, data_root: Path) -> None:
+    result = run_scan(repo, data_root, ["refs/heads/orvanta-x only-three fields"])
+    assert result.returncode == 1
+    assert "line 1 does not have 4 fields" in result.stderr
+    assert "orvanta" not in result.stderr.lower()
+
+
+def test_term_in_tag_name_fails(repo: Repo, data_root: Path) -> None:
+    repo.git("tag", "-a", "orvanta-1", "-m", "Clean release.")
+    result = run_scan(repo, data_root, [tag_line(repo, "orvanta-1")])
+    assert result.returncode == 1
+    assert "push, ref name: private data." in result.stderr

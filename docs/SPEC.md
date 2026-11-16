@@ -387,8 +387,10 @@ Two privacy gates:
 
   For each commit of the push that is not on the remote, the script scans the
   commit message, the path of each added or changed file and the full content
-  of that file. A finding gives the commit, the file and the line number, never
-  the term. The option `--show-terms` also shows the term. It is for the owner
+  of that file. It also scans the ref names of the push, and the tag name and
+  message of each annotated tag (not the tagger line, as it does not scan the
+  commit author). A finding gives the commit, the file and the line number,
+  never the term. An error message never quotes a data root file. The option `--show-terms` also shows the term. It is for the owner
   only. The hook does not use it.
 
   Allow-list: the word "darzi" in each letter case; the owner's name in
