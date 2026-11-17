@@ -1,9 +1,10 @@
 """Selection files: load, hash and check them (D-20, D-21).
 
 A selection picks facts by ID and sets the layout for one job type. It holds no
-fact text. The owner approves each version (`facts approve`); the approval holds
-the SHA-256 of the selection without its `approval` field. The signed approval
-test comes with work item W-5 (docs/SPEC.md section 7).
+fact text. The owner approves each version with `facts approve`, which writes a
+signed record `selections/<type>.approval.json` (docs/SPEC.md section 7). The
+record holds the SHA-256 of the selection without its `approval` field. The old
+`approval` field in the YAML has no effect.
 """
 
 import hashlib
@@ -13,8 +14,15 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from darzi.config import Approval
 from darzi.facts.repo import InputError, read_yaml
 from darzi.facts.validate import Finding
+from darzi.runs.signing import (
+    Verdict,
+    selection_record,
+    selection_target,
+    verify_approval,
+)
 
 
 def load_selection(path: Path) -> dict[str, Any]:
@@ -32,6 +40,24 @@ def selection_hash(selection: dict[str, Any]) -> str:
         content, sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def is_approved(
+    repo: Path, settings: Approval, path: Path, selection: dict[str, Any]
+) -> Verdict:
+    """Return the verdict of `verify_approval()` for the selection file `path`.
+
+    `selection` is the parsed content of `path`. The verdict is "approved" only
+    when the signed record next to `path` holds the hash of this content.
+    """
+    return verify_approval(
+        repo,
+        settings,
+        "selection",
+        selection_target(path),
+        selection_record(path),
+        selection_hash(selection),
+    )
 
 
 def _f(where: str, message: str, rule: str = "D-21") -> Finding:

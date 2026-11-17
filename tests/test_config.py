@@ -13,10 +13,18 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from darzi.config import DEFAULT_OWNER, FACTS_TOML, Config, load_config
+from darzi.config import DEFAULT_OWNER, FACTS_TOML, Approval, Config, load_config
 from darzi.facts.repo import InputError
 
 from .conftest import DATA
+
+# The [approval] section of tests/data/facts.toml.
+SYNTHETIC = Approval(
+    signer="owner",
+    namespace="darzi-approval",
+    allowed_signers="allowed_signers",
+    key="/nonexistent/darzi-test/approval_key",
+)
 
 # Each section of docs/SPEC.md section 5.
 SECTIONS = {"owner", "approval", "render", "form", "fit", "handover"}
@@ -28,7 +36,7 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 
 def test_synthetic_facts_toml_loads() -> None:
-    assert load_config(DATA) == Config(owner_name="Test Person")
+    assert load_config(DATA) == Config(owner_name="Test Person", approval=SYNTHETIC)
 
 
 def test_synthetic_facts_toml_has_each_section_and_no_real_path() -> None:
@@ -362,7 +370,8 @@ def test_config_does_not_read_the_environment(
         _write(tmp_path, "[owner]\nname = 'Test Person'\n")
         written = load_config(tmp_path)
     assert reads == []
-    assert synthetic == written == Config(owner_name="Test Person")
+    assert synthetic == Config(owner_name="Test Person", approval=SYNTHETIC)
+    assert written == Config(owner_name="Test Person")
     assert empty == Config()
     source = Path(__file__).resolve().parents[1] / "src" / "darzi" / "config.py"
     lines = source.read_text(encoding="utf-8").splitlines()
