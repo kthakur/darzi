@@ -326,7 +326,7 @@ def test_load_meta_refuses_a_file_that_cannot_be_read(
     def fail(*args: Any, **kwargs: Any) -> str:
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "read_text", fail)
+    monkeypatch.setattr(Path, "open", fail)
     with pytest.raises(InputError) as exc:
         load_meta(tmp_path)
     assert str(exc.value) == (
@@ -338,12 +338,12 @@ def test_load_meta_refuses_a_file_that_cannot_be_read(
 def test_load_meta_refuses_a_file_it_cannot_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # is_file() too raises an OSError, for example for a run folder that the
-    # user cannot open.
+    # The file test (stat()) too raises an OSError, for example for a run folder
+    # that the user cannot open.
     def fail(*args: Any, **kwargs: Any) -> bool:
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "is_file", fail)
+    monkeypatch.setattr(Path, "stat", fail)
     with pytest.raises(InputError, match="cannot be read: Permission denied"):
         load_meta(tmp_path)
 

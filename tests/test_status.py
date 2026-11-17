@@ -603,8 +603,10 @@ def test_a_run_folder_with_no_permission_is_an_error(
 ) -> None:
     run = _add_run(data_root, GOOD)
     with _mode(run, 0):
+        # stat() raises PermissionError on each Python version. On Python 3.14,
+        # Path.is_file() returns False here instead.
         with pytest.raises(PermissionError):
-            (run / RUN_YAML).is_file()
+            (run / RUN_YAML).stat()
         _expect_one_error(data_root, capsys, DENIED)
 
 
@@ -629,7 +631,7 @@ def test_a_link_into_a_folder_with_no_permission_is_an_error(
     link.symlink_to(closed / "inner")
     with _mode(closed, 0):
         with pytest.raises(PermissionError):
-            link.is_dir()
+            link.stat()
         _expect_one_error(data_root, capsys, DENIED)
 
 
@@ -748,6 +750,11 @@ def _seconds(root: Path, code: int, *extra: str) -> float:
     return time.monotonic() - start
 
 
+# Issue 13 (owner decision): load_meta() refuses a run.yaml that uses a YAML
+# alias, so a value built from aliases is an error before the YAML load.
+ALIAS = "uses a YAML alias (*name). Write each value in full"
+
+
 def test_a_value_built_from_aliases_is_an_error_and_fast(
     data_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -757,17 +764,56 @@ def test_a_value_built_from_aliases_is_an_error_and_fast(
     assert _seconds(data_root, 1) < 2
     assert _seconds(data_root, 1, "--json") < 2
     capsys.readouterr()
-    _expect_one_error(data_root, capsys, _not_text(data_root, "company"))
+    _expect_one_error(data_root, capsys, ALIAS)
 
 
-def test_a_value_built_from_aliases_in_another_key_gives_a_row_fast(
+def test_a_value_built_from_aliases_in_another_key_is_an_error_and_fast(
     data_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _add_run(data_root, _alias_yaml("notes") + GOOD)
-    assert _seconds(data_root, 0) < 2
-    assert _seconds(data_root, 0, "--json") < 2
+    assert _seconds(data_root, 1) < 2
+    assert _seconds(data_root, 1, "--json") < 2
     capsys.readouterr()
+    _expect_one_error(data_root, capsys, ALIAS)
+
+
+def test_one_alias_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _add_run(data_root, GOOD.replace("role: Tester", "role: &r Tester\nnotes: *r"))
+    _expect_one_error(data_root, capsys, ALIAS)
+
+
+def test_an_anchor_with_no_alias_gives_a_row(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _add_run(data_root, GOOD.replace("role: Tester", "role: &r Tester"))
     _expect_row(data_root, capsys, GOOD_ROW)
+
+
+# Issue 13 (owner decision): load_meta() refuses a run.yaml larger than 64 KiB.
+
+TOO_LARGE = "is larger than 64 KiB."
+
+
+def test_a_run_yaml_over_the_size_limit_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = GOOD + "notes: " + "x" * 70_000 + "\n"
+    _add_run(data_root, text)
+    _expect_one_error(data_root, capsys, TOO_LARGE)
+
+
+def test_a_run_yaml_at_the_size_limit_gives_a_row(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = GOOD + "notes: "
+    text = head + "x" * (64 * 1024 - len(head) - 1) + "\n"
+    assert len(text.encode("utf-8")) == 64 * 1024
+    run = _add_run(data_root, text)
+    _expect_row(data_root, capsys, GOOD_ROW)
+    (run / RUN_YAML).write_text(text + "\n", encoding="utf-8")
+    _expect_one_error(data_root, capsys, TOO_LARGE)
 
 
 # Values and keys that give a correct row.
@@ -788,7 +834,8 @@ def test_a_value_built_from_aliases_in_another_key_gives_a_row_fast(
             {**GOOD_ROW, "date": "2026-10-20T10:30:00+05:30"},
         ),
         ("1: one\n~: none\ntrue: yes\n2026-01-01: day\n3.5: x\n" + GOOD, GOOD_ROW),
-        (GOOD.replace("Acme", "A" * 100_000), {**GOOD_ROW, "company": "A" * 100_000}),
+        # Below the size limit of 64 KiB (issue 13).
+        (GOOD.replace("Acme", "A" * 60_000), {**GOOD_ROW, "company": "A" * 60_000}),
     ],
     ids=["nan-inf", "bool", "float", "datetime-with-zone", "keys-not-text", "long"],
 )
@@ -800,6 +847,31 @@ def test_a_value_that_gives_a_row(
 ) -> None:
     _add_run(data_root, text)
     _expect_row(data_root, capsys, row)
+
+
+@pytest.mark.parametrize(
+    # The YAML text "\t" (in double quotes) is one tab character.
+    "value",
+    ["''", "'   '", '"\\t"'],
+    ids=["empty", "blank", "tab"],
+)
+def test_an_empty_or_blank_value_shows_a_mark(
+    data_root: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    # Issue 13: an empty or blank cell shows "" in the table. JSON keeps the value.
+    _add_run(data_root, GOOD.replace("company: Acme", f"company: {value}"))
+    assert _status(data_root) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert re.split(r" {2,}", lines[3].rstrip()) == [
+        "2026-10-20",
+        '""',
+        "Tester",
+        "ux",
+        "new",
+    ]
+    assert _status(data_root, "--json") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["runs"][2]["company"] == yaml.safe_load(f"v: {value}")["v"]
 
 
 def test_a_top_level_list_reads_as_an_empty_mapping(

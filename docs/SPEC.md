@@ -182,7 +182,10 @@ copy_to = ""                         # optional folder that syncs to the phone
 
 All commands accept `--repo PATH` and `--json`. JSON output has
 `"schema_version"`. Exit codes: 0 = no errors, 1 = errors found, 2 = invalid
-input. No command sends data outside the machine, except `new-run --url` (one
+input. A `rules.yaml` or a `base.map.json` that lacks a key that a rule of the
+command can read is invalid input: the command tests the keys before it runs the
+rules, prints a short message that names the key, and gives exit code 2. No
+command sends data outside the machine, except `new-run --url` (one
 fetch) and `doctor` (a release-tag lookup).
 
 | Command | Does | Source |

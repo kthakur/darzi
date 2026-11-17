@@ -19,6 +19,7 @@ from darzi.facts.check_structure import STRUCTURE_RULES, build_context
 from darzi.facts.patterns import find_regex, find_terms, term_regex
 from darzi.facts.repo import InputError
 from darzi.facts.validate import Finding
+from darzi.paths import is_dir, is_file
 
 TAILORED = "tailored.json"
 COVER_LETTER = "cover_letter.md"
@@ -69,7 +70,7 @@ class RunFiles:
 
 def load_run(run: Path) -> RunFiles:
     """Read tailored.json, base.json, base.map.json and cover_letter.md (optional)."""
-    if not run.is_dir():
+    if not is_dir(run):
         raise InputError(f"{run} is not a folder. Pass a run folder.")
     tailored = _resume(run / TAILORED, "Copy base.json to tailored.json first.")
     base = _resume(run / BASE, "Run facts export first.")
@@ -79,15 +80,15 @@ def load_run(run: Path) -> RunFiles:
             f"{run / BASE_MAP} has no entries list. Run facts export again."
         )
     letter_path, job_path = run / COVER_LETTER, run / JOB
-    letter = letter_path.read_text(encoding="utf-8") if letter_path.is_file() else None
-    job = job_path.read_text(encoding="utf-8") if job_path.is_file() else None
+    letter = letter_path.read_text(encoding="utf-8") if is_file(letter_path) else None
+    job = job_path.read_text(encoding="utf-8") if is_file(job_path) else None
     manifest_path = run / MANIFEST
-    manifest = _json(manifest_path, "") if manifest_path.is_file() else None
+    manifest = _json(manifest_path, "") if is_file(manifest_path) else None
     return RunFiles(tailored, letter, base, the_map, job, manifest)
 
 
 def _json(path: Path, fix: str) -> Any:
-    if not path.is_file():
+    if not is_file(path):
         raise InputError(f"{path} does not exist. {fix}")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -146,19 +147,44 @@ MAP_ENTRY_KEYS = ("section", "rm_id")
 RULES_FIX = "Add it to rules.yaml."
 MAP_FIX = "Run facts export again."
 
+# The rules.yaml keys that `facts check SELECTION` reads (check_selection): each
+# entry must be a mapping. `id` and `severity` are not read.
+SELECTION_KEYS: dict[str, tuple[str, ...]] = {
+    "removed_items": (),
+    "doubtful_items": (),
+}
+# The rules.yaml keys that `facts export`, `facts public` and `facts query` read
+# without a default (public_copy, privacy_findings, check_selection). The scan
+# reads `id` and `severity` of the two entries that give findings.
+PUBLIC_KEYS: dict[str, tuple[str, ...]] = {
+    "public_contact": ("email", "phone"),
+    "private_contact_patterns": ("id", "severity", "terms", "regex"),
+    "privacy_patterns": ("id", "severity", "regex", "terms"),
+    "removed_items": ("terms",),
+    "doubtful_items": ("terms",),
+}
+PUBLIC_NESTED_KEYS: tuple[tuple[str, str, tuple[str, ...], bool], ...] = (
+    ("private_contact_patterns", "regex", ("any_email", "any_phone"), False),
+)
 
-def require_keys(rules: Any, the_map: dict[str, Any]) -> None:
-    """Raise InputError when rules.yaml or base.map.json lacks a key that check reads.
 
-    The rules read these keys without a default. Without this test, a missing key
-    stops `facts check` with a traceback. The message names the key and the fix.
+def _require_rule_keys(
+    rules: Any,
+    table: dict[str, tuple[str, ...]],
+    nested: tuple[tuple[str, str, tuple[str, ...], bool], ...],
+    common: tuple[str, ...] = (),
+) -> None:
+    """Raise InputError when rules.yaml lacks a key of `table` or `nested`.
+
+    Each entry of `table` must be a mapping with the keys `common` and its own
+    keys. The message names the key and the fix.
     """
     if not isinstance(rules, dict):
         raise InputError(
             "rules.yaml has no rule entries. Add the rule entries to rules.yaml, "
             "each one a mapping with id and severity."
         )
-    for name, keys in RULE_KEYS.items():
+    for name, keys in table.items():
         if name not in rules:
             raise InputError(f"rules.yaml has no entry {name}. {RULES_FIX}")
         entry = rules[name]
@@ -167,10 +193,10 @@ def require_keys(rules: Any, the_map: dict[str, Any]) -> None:
                 f"rules.yaml: {name} is not a mapping. Write it as a mapping "
                 "with id and severity."
             )
-        for key in ("id", "severity", *keys):
+        for key in (*common, *keys):
             if key not in entry:
                 raise InputError(f"rules.yaml: {name} has no key {key}. {RULES_FIX}")
-    for name, value, keys, is_list in NESTED_KEYS:
+    for name, value, keys, is_list in nested:
         found: Any = rules[name][value]
         items: list[tuple[str, Any]] = (
             [(f"{name}.{value}[{i}]", v) for i, v in enumerate(found or [])]
@@ -183,6 +209,32 @@ def require_keys(rules: Any, the_map: dict[str, Any]) -> None:
                     raise InputError(
                         f"rules.yaml: {where} has no key {key}. {RULES_FIX}"
                     )
+
+
+def require_selection_keys(rules: Any) -> None:
+    """Raise InputError when rules.yaml lacks a key that `facts check SELECTION` reads.
+
+    Without this test, a missing key stops the command with a traceback.
+    """
+    _require_rule_keys(rules, SELECTION_KEYS, ())
+
+
+def require_public_keys(rules: Any) -> None:
+    """Raise InputError when rules.yaml lacks a key that the public copy reads.
+
+    `facts export`, `facts public` and `facts query` call it. Without this test,
+    a missing key stops the command with a traceback.
+    """
+    _require_rule_keys(rules, PUBLIC_KEYS, PUBLIC_NESTED_KEYS)
+
+
+def require_keys(rules: Any, the_map: dict[str, Any]) -> None:
+    """Raise InputError when rules.yaml or base.map.json lacks a key that check reads.
+
+    The rules read these keys without a default. Without this test, a missing key
+    stops `facts check` with a traceback. The message names the key and the fix.
+    """
+    _require_rule_keys(rules, RULE_KEYS, NESTED_KEYS, ("id", "severity"))
     for i, entry in enumerate(the_map.get("entries") or []):
         for key in MAP_ENTRY_KEYS:
             if not isinstance(entry, dict) or key not in entry:

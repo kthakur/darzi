@@ -10,6 +10,7 @@ from typing import Any
 
 from darzi.facts.repo import InputError
 from darzi.facts.validate import Finding
+from darzi.paths import is_dir
 from darzi.runs.runs import APPLICATIONS, RUN_YAML, STATUSES, load_meta
 
 RULE = "status"
@@ -59,7 +60,7 @@ def _text(path: Path, key: str, value: Any) -> str | None:
 def _is_run(path: Path) -> bool:
     """Return True when `path` is a folder. Raises InputError when it cannot tell."""
     try:
-        return path.is_dir()
+        return is_dir(path)
     except OSError as exc:
         raise InputError(
             f"{path} cannot be read: {exc.strerror}. Check the permissions."
@@ -92,7 +93,7 @@ def list_runs(repo: Path) -> tuple[list[RunRow], list[Finding]]:
     findings: list[Finding] = []
     folder = repo / APPLICATIONS
     try:
-        if not folder.is_dir():
+        if not is_dir(folder):
             return rows, findings
         entries = sorted(folder.iterdir())
     except OSError as exc:

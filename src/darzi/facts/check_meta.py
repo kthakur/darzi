@@ -12,6 +12,7 @@ from typing import Any
 
 from darzi.facts.check_structure import Context
 from darzi.facts.validate import Finding
+from darzi.paths import is_file
 
 QUESTIONS = "questions.md"
 OPEN_END_MARKERS = ("## Settled by confirmed facts", "## Resolved")
@@ -39,7 +40,7 @@ def open_questions(text: str) -> dict[str, list[str]]:
 def load_open_questions(repo: Path) -> dict[str, list[str]]:
     """Read questions.md of `repo`; a missing file means no open questions."""
     path = repo / QUESTIONS
-    return open_questions(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    return open_questions(path.read_text(encoding="utf-8")) if is_file(path) else {}
 
 
 def _f(rule: dict[str, Any], where: str, message: str, text: str = "") -> Finding:

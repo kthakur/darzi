@@ -11,21 +11,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
 from jsonschema import Draft202012Validator
 
-from darzi.facts.repo import InputError
+from darzi.facts.repo import InputError, read_yaml
 from darzi.facts.validate import Finding
 
 
 def load_selection(path: Path) -> dict[str, Any]:
     """Return a parsed selection file."""
-    if not path.is_file():
-        raise InputError(f"{path} does not exist. Pass a selections/<type>.yaml file.")
-    try:
-        data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise InputError(f"{path} is not valid YAML: {exc}. Fix the YAML.") from exc
+    data: Any = read_yaml(path, "Pass a selections/<type>.yaml file.")
     if not isinstance(data, dict):
         raise InputError(f"{path} is not a selection (expected a mapping).")
     return data
