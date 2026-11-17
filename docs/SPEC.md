@@ -384,7 +384,7 @@ This check replaces the Resume Matcher parse score.
 | 08 | Add a banned word | fail | R-3 |
 | 09 | Remove a bullet | fail | R-12 |
 | 10 | Remove a role | fail | R-12 |
-| 11 | Add a bullet with new technology names | fail | R-12, R-21 |
+| 11 | Add a bullet with new technology names | fail | R-12, R-20, R-21 |
 | 12 | Add a skill that is not in the fact file | fail | R-19 |
 | 13 | Change the email address | fail | R-1 |
 | 14 | Move the dates of a role | fail | R-10 |

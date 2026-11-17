@@ -86,7 +86,7 @@ roles:
 
   - id: globex
     org: Globex Corporation
-    display_org: Globex
+    display_org: Globex (contract through Initech Staffing)
     title: UX Designer
     location: Shelbyville, ST
     start: 2019-02
@@ -183,9 +183,9 @@ education:
   - id: example-state-hci
     institution: Example State University School of Continuing Professional Studies
     display_institution: Example State University
-    credential: Human-Computer Interaction
+    credential: Coursework, Human-Computer Interaction
     status: coursework
-    start: 2020-09
+    start: 2020
     end: 2021-06
     verified: true
     sources: [confirmed]

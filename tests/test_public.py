@@ -129,7 +129,7 @@ def test_pv1_removed_and_doubtful_items_dropped() -> None:
 def test_display_names_replace_long_names(public: dict[str, Any]) -> None:
     orgs = {e["id"]: e["org"] for e in public["roles"] + public["projects"]}
     assert orgs["acme"] == "Acme"
-    assert orgs["globex"] == "Globex"
+    assert orgs["globex"] == "Globex (contract through Initech Staffing)"
     assert orgs["vandelay"] == "Vandelay Industries"  # no display name: org stays
     schools = {e["id"]: e["institution"] for e in public["education"]}
     assert schools["example-state-hci"] == "Example State University"
@@ -196,6 +196,51 @@ def test_pv3_other_10_digit_phone_is_found() -> None:
         ("R-1", "roles[acme].bullets[acme-checkout].text")
     ]
     assert "'555-555-0101'" in findings[0].message
+
+
+def test_pv3_public_phone_with_country_code() -> None:
+    """The comparison uses the last ten digits of the public phone."""
+    rules = copy.deepcopy(RULES)
+    rules["public_contact"]["phone"] = "+1 555-555-0100"
+    data = public_copy(MASTER, rules)
+    _bullet(data, "acme-checkout")["text"] = "Call 555-555-0100 after noon."
+    assert privacy_findings(data, rules) == []
+    _bullet(data, "acme-checkout")["text"] = "Call (556) 555-0100 after noon."
+    findings = privacy_findings(data, rules)
+    assert [(f.rule, f.location) for f in findings] == [
+        ("R-1", "roles[acme].bullets[acme-checkout].text")
+    ]
+    assert "'(556) 555-0100'" in findings[0].message
+
+
+def test_pv3_private_email_term_gives_one_finding(public: dict[str, Any]) -> None:
+    data = copy.deepcopy(public)
+    _bullet(data, "acme-checkout")["text"] = "Mail test.private@example.org."
+    findings = privacy_findings(data, RULES)
+    assert len(findings) == 1
+    assert "private contact 'test.private@example.org'" in findings[0].message
+
+
+def test_pv3_private_phone_term_gives_one_finding() -> None:
+    rules = copy.deepcopy(RULES)
+    rules["private_contact_patterns"]["terms"].append("555-555-0177")
+    data = public_copy(MASTER, rules)
+    _bullet(data, "acme-checkout")["text"] = "Call 555-555-0177."
+    findings = privacy_findings(data, rules)
+    assert len(findings) == 1
+    assert "private contact '555-555-0177'" in findings[0].message
+    # Control: with no term, the phone comparison finds the same number.
+    findings = privacy_findings(data, RULES)
+    assert len(findings) == 1
+    assert "phone number '555-555-0177'" in findings[0].message
+
+
+def test_pv3_email_ignores_letter_case(public: dict[str, Any]) -> None:
+    data = copy.deepcopy(public)
+    _bullet(data, "acme-checkout")["text"] = "Mail TEST.PERSON@EXAMPLE.COM."
+    assert privacy_findings(data, RULES) == []
+    _bullet(data, "acme-checkout")["text"] = "Mail TEST.OTHER@EXAMPLE.COM."
+    assert len(privacy_findings(data, RULES)) == 1  # control
 
 
 def test_pv3_term_allowed_only_in_approved_bullet(public: dict[str, Any]) -> None:
