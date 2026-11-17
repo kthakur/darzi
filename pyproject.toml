@@ -12,6 +12,9 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+[project.scripts]
+facts = "darzi.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
