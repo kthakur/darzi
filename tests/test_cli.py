@@ -47,7 +47,7 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_each_spec_command_is_built_or_planned() -> None:
-    built = {"validate", "public", "query", "export", "check"}
+    built = {"validate", "public", "query", "export", "check", "new-run", "status"}
     assert built | set(PLANNED) == SPEC_COMMANDS
     assert built.isdisjoint(PLANNED)
 

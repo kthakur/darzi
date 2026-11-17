@@ -1,0 +1,36 @@
+# Synthetic settings for the test data root (docs/SPEC.md section 5).
+# The key path and the Resume Matcher path do not exist on purpose: no test can
+# reach a real key or a real install through this file.
+
+[owner]
+name = "Test Person"
+
+[approval]
+signer = "owner"
+namespace = "darzi-approval"
+allowed_signers = "allowed_signers"
+key = "/nonexistent/darzi-test/approval_key"
+
+[render]
+adapter = "resume-matcher"
+
+[render.resume_matcher]
+path = "/nonexistent/darzi-test/Resume-Matcher"
+commit = "950b700"
+data_dir = ".rm-data"
+# The host names use the reserved top-level domain .invalid (RFC 6761). They
+# cannot resolve on any machine, so a test cannot reach a real renderer that
+# runs on the machine of the test.
+frontend_url = "http://resume-matcher.invalid:3000"
+backend_url = "http://resume-matcher.invalid:8000"
+node = "24.22.1"
+
+[form]
+blocked_hosts = ["jobs.example.com", "board.example.com"]
+
+[fit]
+green = 0.7
+yellow = 0.4
+
+[handover]
+copy_to = ""
