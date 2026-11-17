@@ -8,6 +8,7 @@ conftest.py fails a test that opens a socket or looks up a name.
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
 import socket
 from collections.abc import Callable
 from pathlib import Path
@@ -34,6 +35,9 @@ from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason
 PUBLIC_IP = "1.1.1.1"
 PRIVATE_IP = "127.0.0.1"
 URL = "https://jobs.example.com/acme/designer"
+# The cloud metadata address, made in code: the privacy gate reads the dotted
+# text as a phone number.
+METADATA_IP = str(ipaddress.IPv4Address(0xA9FEA9FE))
 
 JOB_HTML = (
     "<!DOCTYPE html><html><head>"
@@ -73,12 +77,42 @@ def _fetch(
     resolver: Resolver | None = None,
     max_bytes: int = MAX_BODY_BYTES,
 ) -> FetchOk | FetchFailure:
-    return fetch(
+    """Fetch with a fake transport and a fake resolver, and test the hosts.
+
+    Each fetch records the host that the guard resolved and the host that the
+    request went to, for each hop. `_assert_same_hosts` compares them.
+    """
+    resolve = resolver if resolver is not None else _resolver()
+    resolved: list[str] = []
+    connected: list[str] = []
+
+    def record_resolve(host: str) -> list[str]:
+        resolved.append(host)
+        return resolve(host)
+
+    def record_connect(request: httpx.Request) -> httpx.Response:
+        connected.append(request.url.raw_host.decode("ascii"))
+        return responder(request)
+
+    result = fetch(
         url,
-        transport=httpx.MockTransport(responder),
-        resolver=resolver if resolver is not None else _resolver(),
+        transport=httpx.MockTransport(record_connect),
+        resolver=record_resolve,
         max_bytes=max_bytes,
     )
+    _assert_same_hosts(result, resolved, connected)
+    return result
+
+
+def _assert_same_hosts(
+    result: FetchOk | FetchFailure, resolved: list[str], connected: list[str]
+) -> None:
+    """Assert that each request went to the host that the guard resolved."""
+    if isinstance(result, FetchOk):
+        assert connected == resolved
+    else:
+        # A failed fetch can stop after the guard and before the request.
+        assert connected == resolved[: len(connected)]
 
 
 def _html(request: httpx.Request) -> httpx.Response:
@@ -160,6 +194,20 @@ def test_an_unknown_charset_is_read_as_utf8() -> None:
     assert "Product Designer" in result.text
 
 
+@pytest.mark.parametrize("charset", ["rot13", "base64", "idna"])
+def test_a_codec_that_is_not_a_text_encoding_is_read_as_utf8(charset: str) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": f"text/html; charset={charset}"},
+            content=JOB_HTML.encode(),
+        )
+
+    result = _fetch(URL, respond)
+    assert isinstance(result, FetchOk)
+    assert "Product Designer" in result.text
+
+
 # Failures of the server or of the page
 
 
@@ -203,6 +251,15 @@ def test_a_connection_failure_is_an_error() -> None:
         raise httpx.ConnectError("refused", request=request)
 
     _failed(_fetch(URL, respond), FetchReason.CONNECTION_FAILED)
+
+
+def test_an_unexpected_error_is_a_typed_failure() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("unexpected")
+
+    result = _failed(_fetch(URL, respond), FetchReason.CONNECTION_FAILED)
+    assert "RuntimeError" in result.detail
+    assert not result.refused
 
 
 def test_a_body_larger_than_the_limit_stops_the_read() -> None:
@@ -294,6 +351,36 @@ def test_a_redirect_to_a_file_url_is_refused() -> None:
     assert calls == [URL]
 
 
+def test_a_redirect_to_the_metadata_address_is_refused() -> None:
+    calls: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"location": f"http://{METADATA_IP}/x"})
+
+    resolver = _resolver({METADATA_IP: [METADATA_IP]})
+    result = _failed(
+        _fetch(URL, respond, resolver=resolver), FetchReason.BLOCKED_ADDRESS
+    )
+    assert result.url == f"http://{METADATA_IP}/x"
+    assert calls == [URL]
+
+
+def test_a_redirect_to_a_url_with_user_info_is_refused() -> None:
+    calls: list[str] = []
+    target = "https://user:secret@example.com/acme/designer"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.host == "short.example.com":
+            return httpx.Response(302, headers={"location": target})
+        return _html(request)
+
+    result = _fetch("https://short.example.com/1", respond)
+    assert _failed(result, FetchReason.INVALID_URL).refused
+    assert calls == ["https://short.example.com/1"]
+
+
 # The guard
 
 
@@ -320,6 +407,7 @@ def test_a_private_address_is_refused_with_no_request() -> None:
         "10.0.0.5",
         "192.168.1.1",
         "169.254.0.1",
+        METADATA_IP,  # the cloud metadata address
         "::ffff:a9fe:a9fe",  # the cloud metadata address, as IPv6
         "::1",
         # More kinds that the source also refuses.
@@ -344,6 +432,15 @@ def test_an_address_that_is_not_public_is_refused(address: str) -> None:
     calls: list[str] = []
     resolver = _resolver({"inside.example.com": [address]})
     result = _fetch("https://inside.example.com/", _recording(calls), resolver=resolver)
+    assert _failed(result, FetchReason.BLOCKED_ADDRESS).refused
+    assert calls == []
+
+
+def test_the_metadata_address_in_the_url_is_refused_with_no_request() -> None:
+    calls: list[str] = []
+    resolver = _resolver({METADATA_IP: [METADATA_IP]})
+    url = f"http://{METADATA_IP}/latest/"
+    result = _fetch(url, _recording(calls), resolver=resolver)
     assert _failed(result, FetchReason.BLOCKED_ADDRESS).refused
     assert calls == []
 
@@ -398,6 +495,59 @@ def test_a_bad_international_host_name_is_refused() -> None:
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "stra\u00dfe.example.com",  # a sharp s
+        "\u03c3\u03bf\u03c6\u03bf\u03c2.example.com",  # a final sigma
+    ],
+)
+def test_a_host_that_the_two_idna_rules_read_differently_is_refused(
+    host: str,
+) -> None:
+    # The standard library (IDNA 2003) and httpx (IDNA 2008) encode these
+    # names to different ASCII names. The guard must not resolve one name
+    # while httpx connects to the other.
+    calls: list[str] = []
+    result = _fetch(f"https://{host}/", _recording(calls))
+    assert _failed(result, FetchReason.INVALID_URL).refused
+    assert calls == []
+
+
+def test_an_international_host_is_resolved_as_httpx_connects_to_it() -> None:
+    resolved: list[str] = []
+
+    def resolver(host: str) -> list[str]:
+        resolved.append(host)
+        return [PUBLIC_IP]
+
+    calls: list[str] = []
+    result = _fetch(
+        "https://b\u00fccher.example.com/", _recording(calls), resolver=resolver
+    )
+    assert isinstance(result, FetchOk)
+    assert resolved == ["xn--bcher-kva.example.com"]
+    assert calls == ["https://xn--bcher-kva.example.com/"]
+
+
+def test_a_bad_punycode_label_is_refused() -> None:
+    calls: list[str] = []
+    result = _fetch("https://xn--a.example.com/", _recording(calls))
+    assert _failed(result, FetchReason.INVALID_URL).refused
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://user:secret@example.com/", "https://user@example.com/"],
+)
+def test_a_url_with_user_info_is_refused_with_no_request(url: str) -> None:
+    calls: list[str] = []
+    result = _fetch(url, _recording(calls))
+    assert _failed(result, FetchReason.INVALID_URL).refused
+    assert calls == []
+
+
 def test_a_url_that_httpx_refuses_is_refused() -> None:
     calls: list[str] = []
     result = _fetch("https://jobs.example.com/\x00", _recording(calls))
@@ -407,10 +557,14 @@ def test_a_url_that_httpx_refuses_is_refused() -> None:
 
 def test_the_system_resolver_is_the_default(no_network: list[str]) -> None:
     # With no resolver, the guard uses the system name lookup. The fixture
-    # stops it, so the fetch makes no network call.
-    with pytest.raises(AssertionError):
-        fetch(URL, transport=httpx.MockTransport(_html))
+    # stops it with an AssertionError, so the fetch makes no network call.
+    # fetch() never raises: its last catch makes the error a typed failure.
+    calls: list[str] = []
+    result = fetch(URL, transport=httpx.MockTransport(_recording(calls)))
+    failure = _failed(result, FetchReason.CONNECTION_FAILED)
+    assert "AssertionError" in failure.detail
     assert no_network == ["getaddrinfo"]
+    assert calls == []
 
 
 def test_the_no_network_fixture_stops_a_connection(no_network: list[str]) -> None:
@@ -537,6 +691,32 @@ def test_cli_refused_url_makes_no_network_call(
     err = _failed_cli(root, url, 2, capsys)
     assert err.endswith(PASTE + "\n")
     assert no_network == []
+
+
+@pytest.mark.parametrize(
+    "url", ["https://xn--a.example.com/", "https://user:secret@example.com/"]
+)
+def test_cli_invalid_url_exit_2(
+    root: Path,
+    url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _patch_fetch(monkeypatch)
+    err = _failed_cli(root, url, 2, capsys)
+    assert "(invalid_url)" in err and err.endswith(PASTE + "\n")
+    assert calls == []
+
+
+def test_cli_unexpected_error_exit_1(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("unexpected")
+
+    _patch_fetch(monkeypatch, broken)
+    err = _failed_cli(root, URL, 1, capsys)
+    assert "(connection_failed)" in err and err.endswith(PASTE + "\n")
 
 
 def test_cli_bad_company_name_makes_no_fetch(

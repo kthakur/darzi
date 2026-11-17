@@ -4,10 +4,13 @@ This is the one network call of `new-run` (docs/SPEC.md section 6). The URL
 comes from the owner or from an agent, and the page is untrusted data:
 
 - `fetch()` gives a typed result for each failure. It never raises.
-- The guard refuses a URL that is not http or https, and a host that has an
-  address that is not a public internet address. The guard runs before the
-  first request and again before each redirect hop. The fetch follows each
-  redirect itself, at most MAX_REDIRECTS times.
+- The guard refuses a URL that is not http or https, a URL with user-info
+  (`user:password@`), and a host that has an address that is not a public
+  internet address. The guard runs before the first request and again before
+  each redirect hop. The fetch follows each redirect itself, at most
+  MAX_REDIRECTS times.
+- The guard parses each URL one time, with httpx. It resolves the same ASCII
+  host name that httpx connects to, and the request uses that parsed URL.
 - The body is read in chunks and the read stops at the size limit. Each read
   and each connection has a time limit.
 - No link in the page is fetched. Only the redirects of the given URL are.
@@ -79,13 +82,27 @@ def fetch(
     url = url.strip()
     if not url:
         return _failure(FetchReason.INVALID_URL, url)
+    try:
+        return _fetch(url, transport, resolve, max_bytes)
+    except Exception as exc:  # noqa: BLE001 - the last catch: fetch() never raises.
+        detail = f"The fetch failed with an unexpected error ({type(exc).__name__})."
+        return _failure(FetchReason.CONNECTION_FAILED, url, detail)
+
+
+def _fetch(
+    url: str,
+    transport: httpx.BaseTransport | None,
+    resolve: Resolver,
+    max_bytes: int,
+) -> FetchResult:
+    """Do the work of fetch(). The specific failures become typed results here."""
     with _client(transport) as client:
         current = url
         for _ in range(MAX_REDIRECTS + 1):
-            refusal = check_url(current, resolve)
-            if refusal is not None:
-                return _failure(refusal, current)
-            hop = _get(client, current, max_bytes)
+            checked = _guard(current, resolve)
+            if isinstance(checked, FetchReason):
+                return _failure(checked, current)
+            hop = _get(client, checked, current, max_bytes)
             if hop.failure is not None:
                 return hop.failure
             if hop.location is not None:
@@ -105,23 +122,41 @@ def fetch(
 def check_url(url: str, resolver: Resolver) -> FetchReason | None:
     """Return None when `url` can be fetched, else the reason of the refusal.
 
-    The guard refuses a scheme that is not http or https, and a host with an
-    address that is not a public internet address (see `is_blocked`). It tests
-    each address that the name lookup gives.
+    The guard refuses a scheme that is not http or https, a URL with user-info,
+    and a host with an address that is not a public internet address (see
+    `is_blocked`). It tests each address that the name lookup gives.
 
     Known gap: the guard looks up the host name, and then httpx looks up the
     name again when it connects. A name server can give a public address to
     the guard and a private address to httpx (DNS rebinding). A connection that
     uses only the tested address closes this gap; that is a later work item.
     """
+    checked = _guard(url, resolver)
+    return checked if isinstance(checked, FetchReason) else None
+
+
+def _guard(url: str, resolver: Resolver) -> httpx.URL | FetchReason:
+    """Return the parsed URL when `url` can be fetched, else the reason.
+
+    The URL is parsed one time, with httpx, and the request uses this parsed
+    URL. The guard resolves the ASCII host name that httpx connects to. When
+    the standard library reads a different host name from the same text (for
+    example, IDNA 2003 and IDNA 2008 encode some letters differently), the URL
+    is refused.
+    """
     try:
-        split = urlsplit(url)
-    except ValueError:
+        parsed = httpx.URL(url)
+        host = parsed.raw_host.decode("ascii")
+        # Decode the host name too: a bad punycode label raises here.
+        parsed.host  # noqa: B018
+    except (httpx.InvalidURL, ValueError):
         return FetchReason.INVALID_URL
-    if split.scheme.lower() not in _SCHEMES:
+    if parsed.scheme not in _SCHEMES:
         return FetchReason.DISALLOWED_SCHEME
-    host = split.hostname
-    if not host:
+    if not host or parsed.userinfo:
+        # With user-info, httpx sends an Authorization header.
+        return FetchReason.INVALID_URL
+    if _stdlib_host(url) != host:
         return FetchReason.INVALID_URL
     try:
         addresses = resolver(host)
@@ -135,7 +170,21 @@ def check_url(url: str, resolver: Resolver) -> FetchReason | None:
         return FetchReason.UNRESOLVABLE
     if any(is_blocked(address) for address in addresses):
         return FetchReason.BLOCKED_ADDRESS
-    return None
+    return parsed
+
+
+def _stdlib_host(url: str) -> str | None:
+    """Return the host of `url` as the standard library reads it: lower case ASCII.
+
+    Return None when the standard library cannot read or encode the host.
+    """
+    try:
+        host = urlsplit(url).hostname
+        if not host:
+            return None
+        return host.encode("idna").decode("ascii").lower()
+    except ValueError:
+        return None
 
 
 def is_blocked(address: str) -> bool:
@@ -196,10 +245,13 @@ def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
     )
 
 
-def _get(client: httpx.Client, url: str, max_bytes: int) -> _Hop:
-    """Make one GET request with a streamed body. Each failure becomes a _Hop."""
+def _get(client: httpx.Client, target: httpx.URL, url: str, max_bytes: int) -> _Hop:
+    """Make one GET request with a streamed body. Each failure becomes a _Hop.
+
+    `target` is the URL that the guard parsed and tested; `url` is its text.
+    """
     try:
-        with client.stream("GET", url) as response:
+        with client.stream("GET", target) as response:
             if response.is_redirect:
                 return _Hop(location=response.headers.get("location", ""))
             code = response.status_code
@@ -279,16 +331,18 @@ def _is_html(content_type: str) -> bool:
 def _charset(content_type: str) -> str:
     """Return the charset of `content_type`, or UTF-8.
 
-    A charset that Python does not know gives UTF-8. The source raises
-    LookupError for it.
+    A charset that Python does not know gives UTF-8. A codec that is not a
+    text encoding (for example rot13 or base64), or that cannot decode with
+    replacement, also gives UTF-8. The source raises LookupError for these.
     """
     for part in content_type.split(";")[1:]:
         key, _, value = part.strip().partition("=")
         name = value.strip().strip('"')
         if key.lower() == "charset" and name:
             try:
+                b"a".decode(name, errors="replace")
                 return codecs.lookup(name).name
-            except LookupError:
+            except (LookupError, ValueError):
                 return "utf-8"
     return "utf-8"
 
