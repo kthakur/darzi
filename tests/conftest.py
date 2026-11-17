@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import shutil
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +17,30 @@ from darzi.schemas import MASTER, load_schema
 DATA = Path(__file__).resolve().parent / "data"
 
 
+def check_no_network(calls: list[str]) -> None:
+    """Fail the test if the list holds a blocked network call.
+
+    `fetch()` turns each error into a failure result, so the AssertionError of
+    a blocked call does not reach the test. This check at teardown does.
+    """
+    if calls:
+        pytest.fail(
+            f"the test made a network call: {', '.join(calls)}. "
+            "Use a fake transport and a fake resolver. A test that expects "
+            "a blocked call asserts the list, then clears it.",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
-def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     """Make each socket connect and each name lookup fail the test.
 
     The fixture is on for each test, so that no test can make a real network
     call. A test that needs a page uses a fake transport and a fake resolver.
+    The fixture records each blocked call. At teardown, the test fails if the
+    list is not empty. A test that expects a blocked call asks for the list,
+    asserts its content, then clears it.
     """
     calls: list[str] = []
 
@@ -37,7 +55,8 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(socket.socket, "connect_ex", refuse("connect_ex"))
     monkeypatch.setattr(socket, "create_connection", refuse("create_connection"))
     monkeypatch.setattr(socket, "getaddrinfo", refuse("getaddrinfo"))
-    return calls
+    yield calls
+    check_no_network(calls)
 
 
 # The smallest synthetic master.yaml that passes every check. Tests change a copy.

@@ -32,6 +32,8 @@ from darzi.sourcing.fetch import (
 )
 from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason
 
+from .conftest import check_no_network
+
 PUBLIC_IP = "1.1.1.1"
 PRIVATE_IP = "127.0.0.1"
 URL = "https://jobs.example.com/acme/designer"
@@ -564,6 +566,7 @@ def test_the_system_resolver_is_the_default(no_network: list[str]) -> None:
     failure = _failed(result, FetchReason.CONNECTION_FAILED)
     assert "AssertionError" in failure.detail
     assert no_network == ["getaddrinfo"]
+    no_network.clear()
     assert calls == []
 
 
@@ -571,6 +574,15 @@ def test_the_no_network_fixture_stops_a_connection(no_network: list[str]) -> Non
     with pytest.raises(AssertionError):
         socket.create_connection(("jobs.example.com", 443))
     assert no_network == ["create_connection"]
+    no_network.clear()
+
+
+def test_a_blocked_call_fails_the_test_at_teardown() -> None:
+    # fetch() hides the AssertionError of a blocked call in a failure result.
+    # The fixture teardown runs this check, so the test fails all the same.
+    with pytest.raises(pytest.fail.Exception, match="getaddrinfo"):
+        check_no_network(["getaddrinfo"])
+    check_no_network([])
 
 
 # facts new-run --url
