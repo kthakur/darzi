@@ -19,7 +19,9 @@ Accepted forms:
 - A link in the contact data: as approved, or as the template shows it
   (`template_link`).
 - In a PDF only, a bullet with HTML tags: without the tags, because the
-  template shows the HTML. The Word file shows the bullet as text, with tags.
+  template shows the HTML. Only the tags that the template keeps count as tags
+  (`strong`, `em`, `u`, `a`); each other "<...>" is text. The Word file shows
+  the bullet as text, with tags.
 
 What must be in the file, in this order: the name; for each visible section in
 the `sectionMeta` order, its items: the summary; for each full entry its title
@@ -34,20 +36,44 @@ that part: after its first item and before the first item of the next part.
 For a cover letter, each paragraph must be there, in the approved order.
 
 An approved item that is empty after normalization adds no text, so the check
-skips it. An item of one, two or three characters (for example the skill "Go")
-must stand alone: no letter or digit directly before or after it.
+skips it.
 
-Limits. The check can pass a wrong file: extra text that is not approved;
-hidden text (white, very small, off the page); words in a wrong letter case; a
-short item found as a whole word in other text of the same part; a field that
-the check does not test (the personal title, the links of a project, a custom
-section, the section headings). The check can fail a correct file: a template
-with two columns, whose text order is not the section order; a font with no
-Unicode map; a page header or footer inside an item; a value that the template
-shows in a form not listed above; an HTML entity such as `&amp;` in a PDF
-bullet; text that the PDF extraction runs together with no space.
+The ends of a match. Where an item starts or ends with a letter or a digit, the
+file must have no letter or digit directly before or after it, so "Go" does not
+match inside "Google". A phone number must not go on with more digits (after
+spaces, dots, dashes or brackets). An email address or a link must not go on
+with a ".", "-", "_" or "/" and then a letter or digit, so a longer domain or a
+longer path does not match; a dot or a slash at its end is accepted. A single
+date must not be one end of a range ("Jan 2020" does not match in "Jan 2020 -
+Dec 2020"); a date that is approved as a range can be a range.
+
+One place for each item. Each item claims its own span of the extracted text,
+and no two items use the same text. So a company does not match inside a
+bullet, and a role does not match inside the project name. The walk claims the
+spans of the ordered items, each at its first free match after the previous
+one. It also claims the line of each section heading, when that line comes
+before the first item of the section, so that a skill does not match inside a
+heading; a heading that is not there gives no finding. Then the other fields of
+each part share out the free text of the part: the check tries the placements
+and passes when each field gets its own span. A field with no free span is
+missing.
+
+Limits. The check can pass a wrong file: extra text that nobody approved, in a
+place where it does not touch an approved item (an added bullet, an added
+sentence, an added skill, a changed personal title); hidden text (white, very
+small, off the page); words in a wrong letter case; a field that the check does
+not test (the personal title, the links of a project, a custom section); a
+section heading that is not there. The check can fail a correct file: a
+template with two columns, whose text order is not the section order; a font
+with no Unicode map; a page header or footer inside an item; a value that the
+template shows in a form not listed above; an HTML entity such as `&amp;` in a
+PDF bullet; a tag other than the four that the template keeps (for example
+`<b>`) in a PDF bullet, because the template removes it and the check expects
+it as text; text that the PDF extraction runs together with no space, also
+between two fields (for example a title and its dates).
 """
 
+import functools
 import io
 import re
 import unicodedata
@@ -64,11 +90,41 @@ from darzi.render.word import section_order
 
 RULE = "roundtrip"
 Kind = Literal["pdf", "docx"]
-# An item of this length or shorter must stand alone (no letter or digit next
-# to it), so that it does not match inside a longer word by accident.
-SHORT_ITEM = 3
+# The kind of an item, for the rules at the ends of a match: plain text, a phone
+# number, an email address or a link, a single date, a section heading.
+Token = Literal["text", "phone", "address", "date", "heading"]
+Span = tuple[int, int]
+# The number of matches of one item that `place` tries.
+MAX_OPTIONS = 20
 _LINE_BREAKS = "\n\r\x0b\x0c\x85\u2028\u2029"
-_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
+# The tags that the template keeps in a bullet: ALLOWED_TAGS in
+# apps/frontend/lib/utils/html-sanitizer.ts. Other "<...>" text stays text.
+_TAG = re.compile(r"</?(?:strong|em|u|a)(?:\s[^<>]*)?/?>", re.IGNORECASE)
+_ALNUM = r"[^\W_]"
+_NOT_AFTER_ALNUM = rf"(?<!{_ALNUM})"
+_NOT_BEFORE_ALNUM = rf"(?!{_ALNUM})"
+_DASHES = "\\-\u2013\u2014"
+_SPACES = ("", " ", "\n")
+# Rules at the start and at the end of a match, for each token. A phone number
+# must not go on with more digits; an email address or a link must not go on
+# with more domain or path; a single date must not be one end of a range; a
+# heading must be a full line.
+_TOKEN_BEFORE: dict[Token, str] = {
+    "text": "",
+    "phone": r"(?<!\d[ .()\-])",
+    "address": rf"(?<!{_ALNUM}[._\-])",
+    "date": "".join(
+        rf"(?<!{_ALNUM}{a}[{_DASHES}]{b})" for a in _SPACES for b in _SPACES
+    ),
+    "heading": r"(?<![^\n])",
+}
+_TOKEN_AFTER: dict[Token, str] = {
+    "text": "",
+    "phone": r"(?![ .()\-]*\d)",
+    "address": rf"(?![./_\-]{_ALNUM})",
+    "date": rf"(?![ \n]?[{_DASHES}][ \n]?{_ALNUM})",
+    "heading": r"(?![^\n])",
+}
 _ZIP_HEAD = b"PK\x03\x04"
 _PDF_HEAD = b"%PDF-"
 
@@ -80,12 +136,14 @@ class Item:
     location: str
     text: str
     forms: tuple[str, ...]
+    token: Token = "text"
 
 
 @dataclass
 class Part:
-    """A part of the file: items in a fixed order, and items anywhere in it."""
+    """A part of the file: its heading, items in a fixed order, items anywhere."""
 
+    heading: Item | None = None
     ordered: list[Item] = field(default_factory=list[Item])
     inside: list[Item] = field(default_factory=list[Item])
 
@@ -249,24 +307,32 @@ def resume_parts(resume: dict[str, Any], kind: Kind) -> list[Part]:
     info: dict[str, Any] = resume.get("personalInfo") or {}
     header = Part()
     _add(header.ordered, "personalInfo.name", info.get("name"))
-    for key in ("email", "phone", "location"):
-        _add(header.inside, f"personalInfo.{key}", info.get(key))
+    _add(header.inside, "personalInfo.email", info.get("email"), token="address")
+    _add(header.inside, "personalInfo.phone", info.get("phone"), token="phone")
+    _add(header.inside, "personalInfo.location", info.get("location"))
     for key in ("website", "linkedin", "github"):
-        _add(header.inside, f"personalInfo.{key}", info.get(key), template_link)
+        where = f"personalInfo.{key}"
+        _add(header.inside, where, info.get(key), template_link, token="address")
     parts = [header]
-    for key, _label in section_order(resume):
+    for key, label in section_order(resume):
+        section: list[Part] = []
         if key == "summary":
             part = Part()
             _add(part.ordered, "summary", resume.get("summary"))
-            parts.append(part)
+            section.append(part)
         elif key == "workExperience":
-            parts += _experience(resume.get("workExperience") or [], kind)
+            section = _experience(resume.get("workExperience") or [], kind)
         elif key == "personalProjects":
-            parts += _projects(resume.get("personalProjects") or [], kind)
+            section = _projects(resume.get("personalProjects") or [], kind)
         elif key == "education":
-            parts += _education(resume.get("education") or [], kind)
+            section = _education(resume.get("education") or [], kind)
         elif key == "additional":
-            parts.append(_additional(resume.get("additional") or {}))
+            section.append(_additional(resume.get("additional") or {}))
+        if section:
+            headings: list[Item] = []
+            _add(headings, f"sectionMeta.{key}.displayName", label, token="heading")
+            section[0].heading = headings[0] if headings else None
+        parts += section
     return parts
 
 
@@ -278,7 +344,7 @@ def _experience(entries: list[dict[str, Any]], kind: Kind) -> list[Part]:
         part = Part()
         _add(part.ordered, f"{where}.title", entry.get("title"))
         _add(part.inside, f"{where}.company", entry.get("company"))
-        _add(part.inside, f"{where}.years", entry.get("years"), template_date)
+        _add_years(part.inside, f"{where}.years", entry.get("years"))
         if entry.get("condensed"):
             condensed.append(part)
             continue
@@ -295,7 +361,7 @@ def _projects(entries: list[dict[str, Any]], kind: Kind) -> list[Part]:
         part = Part()
         _add(part.ordered, f"{where}.name", entry.get("name"))
         _add(part.inside, f"{where}.role", entry.get("role"))
-        _add(part.inside, f"{where}.years", entry.get("years"), template_date)
+        _add_years(part.inside, f"{where}.years", entry.get("years"))
         _bullets(part, where, entry.get("description") or [], kind)
         parts.append(part)
     return parts
@@ -313,7 +379,7 @@ def _education(entries: list[dict[str, Any]], kind: Kind) -> list[Part]:
         part = Part()
         _add(part.ordered, f"{where}.{first}", entry.get(first))
         _add(part.inside, f"{where}.{second}", entry.get(second))
-        _add(part.inside, f"{where}.years", entry.get("years"), template_date)
+        _add_years(part.inside, f"{where}.years", entry.get("years"))
         _add(part.inside, f"{where}.description", entry.get("description"))
         parts.append(part)
     return parts
@@ -341,7 +407,11 @@ def _strip_tags(text: str) -> str:
 
 
 def _add(
-    items: list[Item], location: str, value: Any, *forms: Callable[[str], str]
+    items: list[Item],
+    location: str,
+    value: Any,
+    *forms: Callable[[str], str],
+    token: Token = "text",
 ) -> None:
     """Add `value` to `items` with its accepted forms; skip an empty value.
 
@@ -356,15 +426,26 @@ def _add(
         accepted.insert(0, normalize(text))
     unique = tuple(dict.fromkeys(a for a in accepted if a))
     if unique:
-        items.append(Item(location, text, unique))
+        items.append(Item(location, text, unique, token))
 
 
-def _pattern(form: str) -> re.Pattern[str]:
+def _add_years(items: list[Item], location: str, value: Any) -> None:
+    """Add a date field. A single date must not be a part of a longer range."""
+    if value is None:
+        return
+    is_range = bool(re.search(f"[{_DASHES}]", template_date(str(value))))
+    _add(items, location, value, template_date, token="text" if is_range else "date")
+
+
+@functools.cache
+def _pattern(form: str, token: Token) -> re.Pattern[str]:
     """Return the regular expression of one normalized form.
 
     A space matches a space or a line break. A line break may follow a hyphen of
     the item, and a hyphen with a line break may come between two letters or
-    digits (a word broken at a line end). A short item must stand alone.
+    digits (a word broken at a line end). Where the item starts or ends with a
+    letter or a digit, the text must have no letter or digit directly before or
+    after it. The token adds the rules of `_TOKEN_BEFORE` and `_TOKEN_AFTER`.
     """
     parts: list[str] = []
     for i, char in enumerate(form):
@@ -378,40 +459,104 @@ def _pattern(form: str) -> re.Pattern[str]:
         elif char.isalnum() and after.isalnum():
             parts.append("(?:-\n)?")
     body = "".join(parts)
-    if len(form) <= SHORT_ITEM:
-        if form[0].isalnum():
-            body = r"(?<![^\W_])" + body
-        if form[-1].isalnum():
-            body += r"(?![^\W_])"
-    return re.compile(body)
+    if form[0].isalnum():
+        body = _NOT_AFTER_ALNUM + body
+    if form[-1].isalnum():
+        body += _NOT_BEFORE_ALNUM
+    return re.compile(_TOKEN_BEFORE[token] + body + _TOKEN_AFTER[token])
 
 
-def _find(item: Item, text: str, start: int, end: int) -> tuple[int, int] | None:
-    """Return the first match of `item` in text[start:end], or None."""
-    best: tuple[int, int] | None = None
+def _spans(
+    item: Item, text: str, begin: int, end: int, claimed: Sequence[Span]
+) -> list[Span]:
+    """Return each match of `item` inside text[begin:end] that is still free.
+
+    A free match overlaps no span in `claimed`. The list is in text order.
+    """
+    found: set[Span] = set()
     for form in item.forms:
-        match = _pattern(form).search(text, start, end)
-        if match and (best is None or match.start() < best[0]):
-            best = (match.start(), match.end())
+        pattern = _pattern(form, item.token)
+        pos = begin
+        while (match := pattern.search(text, pos)) and match.start() < end:
+            span = (match.start(), match.end())
+            if span[1] <= end and not any(_overlap(span, c) for c in claimed):
+                found.add(span)
+            pos = match.start() + 1
+    return sorted(found)
+
+
+def _overlap(a: Span, b: Span) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def place(options: Sequence[Sequence[Span]]) -> list[Span | None]:
+    """Give each item one span from its options, with no two spans overlapping.
+
+    `options[i]` holds the free matches of item i. The result gives the span of
+    each item, or None for an item that gets no span. The search tries the
+    placements in a fixed order and keeps the first one that gives a span to
+    the largest number of items. Only the first `MAX_OPTIONS` matches of an
+    item take part.
+    """
+    count = len(options)
+    order = sorted(range(count), key=lambda i: len(options[i]))
+    best: list[Span | None] = [None] * count
+    best_placed = 0
+    chosen: list[Span | None] = [None] * count
+
+    def visit(step: int, placed: int) -> None:
+        nonlocal best, best_placed
+        if placed + count - step <= best_placed:
+            return
+        if step == count:
+            best, best_placed = list(chosen), placed
+            return
+        index = order[step]
+        taken = [c for c in chosen if c is not None]
+        for span in options[index][:MAX_OPTIONS]:
+            if not any(_overlap(span, t) for t in taken):
+                chosen[index] = span
+                visit(step + 1, placed + 1)
+                chosen[index] = None
+                if best_placed == count:
+                    return
+        visit(step + 1, placed)
+
+    visit(0, 0)
     return best
 
 
 def _walk(parts: list[Part], text: str, path: Path) -> list[Finding]:
+    """Return a finding for each item of `parts` that is not in `text`.
+
+    Each item claims its own span of the text, and no two items share a span or
+    a part of one. First the walk goes through the parts in order. A section
+    heading claims its line, when the line is there before the first item of the
+    section. Each ordered item claims its first free match after the previous
+    ordered item. Then, for each part, the items that may be anywhere in it
+    share out the free text between the first ordered item of the part and the
+    first ordered item of the next part (`place`). The longest item is tried
+    first only when two items have the same number of free matches; any
+    placement that gives each item its own span is a pass.
+    """
     findings: list[Finding] = []
+    claimed: list[Span] = []
     cursor = 0
     starts: list[int | None] = []
     begins: list[int] = []
     for part in parts:
+        cursor = _claim_heading(part, text, cursor, claimed)
         begins.append(cursor)
         first: int | None = None
         for number, item in enumerate(part.ordered):
-            found = _find(item, text, cursor, len(text))
-            if found is None:
-                findings.append(_order_finding(item, text, path))
+            free = _spans(item, text, cursor, len(text), claimed)
+            if not free:
+                findings.append(_order_finding(item, text, path, claimed))
                 continue
+            claimed.append(free[0])
             if number == 0:
-                first = found[0]
-            cursor = found[1]
+                first = free[0][0]
+            cursor = free[0][1]
         starts.append(first)
     for index, part in enumerate(parts):
         start = starts[index]
@@ -421,23 +566,48 @@ def _walk(parts: list[Part], text: str, path: Path) -> list[Finding]:
             continue
         begin = begins[index] if start is None else start
         later = [s for s in starts[index + 1 :] if s is not None]
-        end = later[0] if later else len(text)
-        for item in part.inside:
-            if _find(item, text, begin, max(begin, end)) is None:
-                findings.append(
-                    Finding(
-                        RULE,
-                        "error",
-                        item.location,
-                        f"This approved text is not in its part of {path.name}.",
-                        item.text,
-                    )
+        end = max(begin, later[0] if later else len(text))
+        items = sorted(part.inside, key=lambda i: -max(len(f) for f in i.forms))
+        spans = place([_spans(i, text, begin, end, claimed) for i in items])
+        for item, span in zip(items, spans, strict=True):
+            if span is not None:
+                claimed.append(span)
+                continue
+            findings.append(
+                Finding(
+                    RULE,
+                    "error",
+                    item.location,
+                    f"This approved text is not in its part of {path.name}.",
+                    item.text,
                 )
+            )
     return findings
 
 
-def _order_finding(item: Item, text: str, path: Path) -> Finding:
-    if _find(item, text, 0, len(text)) is None:
+def _claim_heading(part: Part, text: str, cursor: int, claimed: list[Span]) -> int:
+    """Claim the heading line of `part` when it comes before the part's first item.
+
+    Return the new cursor: the end of the heading, or `cursor` when the heading is
+    not claimed. A heading that is not there gives no finding.
+    """
+    if part.heading is None:
+        return cursor
+    heading = _spans(part.heading, text, cursor, len(text), claimed)
+    if not heading:
+        return cursor
+    if part.ordered:
+        first = _spans(part.ordered[0], text, cursor, len(text), claimed)
+        if first and first[0][0] < heading[0][0]:
+            return cursor
+    claimed.append(heading[0])
+    return heading[0][1]
+
+
+def _order_finding(
+    item: Item, text: str, path: Path, claimed: Sequence[Span]
+) -> Finding:
+    if not _spans(item, text, 0, len(text), claimed):
         message = f"This approved text is not in {path.name}."
     else:
         message = (

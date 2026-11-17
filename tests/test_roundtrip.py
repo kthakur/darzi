@@ -20,6 +20,7 @@ from darzi.runs.roundtrip import (
     check_resume,
     letter_paragraphs,
     normalize,
+    place,
     template_date,
     template_link,
 )
@@ -431,6 +432,242 @@ def test_the_order_rule_agrees_with_the_word_file(tmp_path: Path) -> None:
     headings = [p.text for p in Document(str(path)).paragraphs if p.text in labels]
     assert headings == [label.upper() for _key, label in section_order(resume)]
     assert check_resume(resume, path) == []
+
+
+# --- One place for each item, and the ends of a match --------------------------
+
+Change = Callable[[Resume], None]
+
+
+def _put(path: str, value: Any) -> Change:
+    """Return a function that sets the value at `path` (dots and indexes)."""
+
+    def put(resume: Resume) -> None:
+        keys: list[Any] = [int(k) if k.isdigit() else k for k in path.split(".")]
+        target: Any = resume
+        for key in keys[:-1]:
+            target = target[key]
+        target[keys[-1]] = value
+
+    return put
+
+
+BULLET = "workExperience.0.description.0"
+ACME_BULLET = _put(BULLET, "Ran 20 user interviews for Acme on the settings pages.")
+YEAR = [
+    _put("workExperience.0.years", "2021"),
+    _put(BULLET, "Ran 20 user interviews in 2021."),
+]
+GO_SKILL: list[Change] = [
+    lambda r: r["additional"]["technicalSkills"].insert(0, "Go"),
+    lambda r: r["sectionMeta"][-1].update(displayName="Go-To Skills"),
+]
+
+# Each case: the changes to the approved résumé, the changes to the file only,
+# and the item that must have a finding. Each file holds the approved text of
+# that item only inside a different item or inside a longer value.
+WRONG: dict[str, tuple[list[Change], list[Change], str]] = {
+    "company named in a bullet": (
+        [ACME_BULLET],
+        [_put("workExperience.0.company", "")],
+        "workExperience[0].company",
+    ),
+    "company inside the location": (
+        [_put("workExperience.0.company", "Springfield")],
+        [_put("workExperience.0.company", "")],
+        "workExperience[0].company",
+    ),
+    "company at the end of a longer word": (
+        [],
+        [_put("workExperience.0.company", "Megaacme")],
+        "workExperience[0].company",
+    ),
+    "year in a bullet": (
+        YEAR,
+        [_put("workExperience.0.years", "")],
+        "workExperience[0].years",
+    ),
+    "title inside a longer word": (
+        [
+            _put("workExperience.0.title", "Strategist"),
+            _put("workExperience.0.company", "Strategists Guild"),
+        ],
+        [_put("workExperience.0.title", "")],
+        "workExperience[0].title",
+    ),
+    "role inside the project name": (
+        [_put("personalProjects.0.name", "Lead Designer Toolkit")],
+        [_put("personalProjects.0.role", "")],
+        "personalProjects[0].role",
+    ),
+    "skill inside a section heading": (
+        GO_SKILL,
+        [lambda r: r["additional"]["technicalSkills"].pop(0)],
+        "additional.technicalSkills[0]",
+    ),
+    "phone with one more digit": (
+        [],
+        [_put("personalInfo.phone", "555-01001")],
+        "personalInfo.phone",
+    ),
+    "phone with more digits after a dash": (
+        [],
+        [_put("personalInfo.phone", "555-0100-7")],
+        "personalInfo.phone",
+    ),
+    "phone with more digits in front": (
+        [],
+        [_put("personalInfo.phone", "1-555-0100")],
+        "personalInfo.phone",
+    ),
+    "email with a longer domain": (
+        [],
+        # Two strings, so that the privacy gate sees no address at a longer domain.
+        [_put("personalInfo.email", "test.person@example.com" + ".example.org")],
+        "personalInfo.email",
+    ),
+    "email with a dash and more text after the domain": (
+        [],
+        [_put("personalInfo.email", "test.person@example.com-mail")],
+        "personalInfo.email",
+    ),
+    "email with more text in front": (
+        [],
+        [_put("personalInfo.email", "x.test.person@example.com")],
+        "personalInfo.email",
+    ),
+    "link with a longer last part": (
+        [],
+        [_put("personalInfo.github", "github.com/test-person-2")],
+        "personalInfo.github",
+    ),
+    "link with one more path part": (
+        [],
+        [_put("personalInfo.github", "github.com/test-person/old")],
+        "personalInfo.github",
+    ),
+    "month shown as the start of a range": (
+        [_put("personalProjects.0.years", "Jan 2020")],
+        [_put("personalProjects.0.years", "Jan 2020 - Dec 2020")],
+        "personalProjects[0].years",
+    ),
+    "month shown as the end of a range": (
+        [_put("personalProjects.0.years", "Jan 2020")],
+        [_put("personalProjects.0.years", "Dec 2019 - Jan 2020")],
+        "personalProjects[0].years",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("case", sorted(WRONG))
+def test_an_item_only_inside_other_text_fails(
+    kind: str, case: str, tmp_path: Path
+) -> None:
+    approved_changes, shown_changes, location = WRONG[case]
+    approved = rich()
+    for change in approved_changes:
+        change(approved)
+    shown = copy.deepcopy(approved)
+    for change in shown_changes:
+        change(shown)
+    assert location in locations(check_resume(approved, write(kind, shown, tmp_path)))
+
+
+# Each case: the changes to the approved résumé (the file shows it as approved),
+# then the changes to the file only, in a form that the check accepts.
+RIGHT: dict[str, tuple[list[Change], list[Change]]] = {
+    "company also named in a bullet": ([ACME_BULLET], []),
+    "company also inside the location": (
+        [_put("workExperience.0.company", "Springfield")],
+        [],
+    ),
+    "year also in a bullet": (YEAR, []),
+    "role also inside the project name": (
+        [_put("personalProjects.0.name", "Lead Designer Toolkit")],
+        [],
+    ),
+    "skill also inside a section heading": (GO_SKILL, []),
+    "a date range approved as a range": (
+        [_put("personalProjects.0.years", "Jan 2020 - Dec 2020")],
+        [],
+    ),
+    "email before a sentence dot": (
+        [],
+        [_put("personalInfo.email", "test.person@example.com.")],
+    ),
+    "link with a final slash": (
+        [],
+        [_put("personalInfo.github", "github.com/test-person/")],
+    ),
+    "link with https in front": (
+        [],
+        [_put("personalInfo.github", "https://github.com/test-person")],
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("case", sorted(RIGHT))
+def test_an_item_in_its_own_place_passes(kind: str, case: str, tmp_path: Path) -> None:
+    approved_changes, shown_changes = RIGHT[case]
+    approved = rich()
+    for change in approved_changes:
+        change(approved)
+    shown = copy.deepcopy(approved)
+    for change in shown_changes:
+        change(shown)
+    assert check_resume(approved, write(kind, shown, tmp_path)) == []
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_one_value_in_the_file_cannot_serve_two_parts(
+    kind: str, tmp_path: Path
+) -> None:
+    approved = rich()
+    first = "degree" if kind == "docx" else "institution"
+    second = "institution" if kind == "docx" else "degree"
+    entry = copy.deepcopy(approved["education"][0])
+    entry[first] = ""
+    approved["education"].append(entry)
+    assert check_resume(approved, write(kind, approved, tmp_path, "ok")) == []
+    # The first entry loses its second field and its years. The second entry,
+    # with no ordered item, shows the same values one time only.
+    shown = copy.deepcopy(approved)
+    shown["education"][0][second] = ""
+    shown["education"][0]["years"] = ""
+    findings = check_resume(approved, write(kind, shown, tmp_path))
+    assert f"education[1].{second}" in locations(findings)
+    assert "education[1].years" in locations(findings)
+
+
+def test_place() -> None:
+    # The first match of the first item blocks the only free match of the second
+    # item, so the search must try the second match of the first item.
+    options = [[(0, 10), (20, 30)], [(5, 8), (40, 50)], [(40, 50), (45, 46)]]
+    assert place(options) == [(20, 30), (5, 8), (40, 50)]
+    assert place([[(0, 5)], [(1, 3)]]) == [(0, 5), None]
+    assert place([]) == []
+
+
+def test_only_the_template_tags_are_removed_from_a_pdf_bullet(
+    tmp_path: Path,
+) -> None:
+    approved = rich()
+    bullet = "Proved x<y and z>w."
+    approved["personalProjects"][0]["description"] = [bullet]
+    lines = pdf_lines(approved)
+    at = lines.index("\u2022 " + bullet)
+    path = tmp_path / "ok.pdf"
+    path.write_bytes(pdf_bytes(lines))
+    assert check_resume(approved, path) == []
+    # The words between the two signs are approved text, not a tag.
+    lines[at] = "\u2022 Proved xw."
+    path = tmp_path / "wrong.pdf"
+    path.write_bytes(pdf_bytes(lines))
+    assert locations(check_resume(approved, path)) == [
+        "personalProjects[0].description[0]"
+    ]
 
 
 # --- Files that cannot be read -----------------------------------------------
