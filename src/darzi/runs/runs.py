@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from darzi.facts.repo import InputError, read_yaml
+from darzi.paths import is_file
 
 APPLICATIONS = "applications"
 JOB = "job.md"
@@ -113,3 +114,27 @@ def load_meta(run_dir: Path) -> dict[str, Any]:
     if not isinstance(meta, dict):
         raise InputError(f"{path} is not a mapping. Fix the YAML.")
     return meta
+
+
+# The PDF page size is US Letter by default. The print_settings of run.yaml
+# (the Resume Matcher print settings, for example compactMode) replace a key of
+# this mapping. They change the layout, not the facts.
+DEFAULT_PRINT: dict[str, Any] = {"pageSize": "LETTER"}
+
+
+def print_settings(run_dir: Path) -> dict[str, Any]:
+    """Return the PDF print settings of a run: DEFAULT_PRINT plus run.yaml.
+
+    The `print_settings` mapping of `run.yaml` replaces the keys of
+    DEFAULT_PRINT that it has. An absent `run.yaml`, or no `print_settings`,
+    gives DEFAULT_PRINT. Raises InputError when `run.yaml` cannot be read (see
+    load_meta) or `print_settings` is not a mapping.
+    """
+    meta = load_meta(run_dir) if is_file(run_dir / RUN_YAML) else {}
+    extra: Any = meta.get("print_settings") or {}
+    if not isinstance(extra, dict):
+        raise InputError(
+            f"{run_dir / RUN_YAML}: print_settings is not a mapping. "
+            "Write it as keys and values, or remove it."
+        )
+    return {**DEFAULT_PRINT, **extra}

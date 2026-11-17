@@ -7,7 +7,9 @@ Each command comes with its work item of docs/SPEC.md section 11. Exit codes:
 import argparse
 import datetime as dt
 import json
+import shutil
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -43,6 +45,8 @@ from darzi.facts.selection import (
 )
 from darzi.facts.validate import Finding, validate
 from darzi.paths import exists, is_file
+from darzi.render import resume_matcher
+from darzi.render.port import Renderer, RenderError
 from darzi.runs.approve import (
     Ask,
     confirm,
@@ -54,7 +58,14 @@ from darzi.runs.approve import (
     sign_problem,
     unreviewable,
 )
-from darzi.runs.runs import APPLICATIONS, APPROVAL, content_hash, new_run, run_name
+from darzi.runs.runs import (
+    APPLICATIONS,
+    APPROVAL,
+    content_hash,
+    new_run,
+    print_settings,
+    run_name,
+)
 from darzi.runs.signing import run_target, selection_record, selection_target
 from darzi.runs.status import RunRow, list_runs
 from darzi.schemas import MASTER, RULES, SELECTION, load_schema
@@ -65,7 +76,6 @@ JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "render": "W-6",
     "finalize": "W-8",
     "answers": "W-9",
     "fill-plan": "W-9",
@@ -128,6 +138,17 @@ def build_parser() -> argparse.ArgumentParser:
     approve_cmd.add_argument(
         "target", type=Path, help="selections/<type>.yaml, or a run folder"
     )
+    render_cmd = sub.add_parser(
+        "render",
+        parents=[common],
+        help="render tailored.json to a draft PDF outside the run folder",
+    )
+    render_cmd.add_argument("run", type=Path, help="run folder with tailored.json")
+    render_cmd.add_argument(
+        "--draft",
+        action="store_true",
+        help="render to a new temporary folder; write nothing in the run folder",
+    )
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -159,6 +180,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _status(args.repo, args.json)
     if command == "approve":
         return _approve(args.target, args.repo)
+    if command == "render":
+        return _render(args.run, args.repo, args.draft, args.json)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -272,6 +295,58 @@ def _export(path: Path, run: Path, repo_arg: Path | None, as_json: bool) -> int:
         (run / name).write_text(text, encoding="utf-8")
     entries = len(base_map["entries"])
     print(f"facts export: wrote {run / BASE} and {run / BASE_MAP} ({entries} entries).")
+    return 0
+
+
+def make_renderer(repo: Path) -> Renderer:
+    """Return the renderer that `[render]` in facts.toml of `repo` names.
+
+    Raises InputError for an absent or bad setting.
+    """
+    return resume_matcher.from_settings(repo, load_config(repo).render)
+
+
+def _render(run: Path, repo_arg: Path | None, draft: bool, as_json: bool) -> int:
+    # A draft needs no approval. It writes the PDF to a new temporary folder
+    # outside the run folder, and nothing in the run folder (docs/SPEC.md
+    # section 6). The final PDF comes with facts finalize (W-8).
+    if not draft:
+        print(
+            "facts render: give --draft. The final PDF comes with facts finalize.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        repo = find_repo(repo_arg)
+        resume = load_run(run).tailored
+        settings = print_settings(run)
+        renderer = make_renderer(repo)
+    except InputError as exc:
+        print(_line(f"facts render: {exc}"), file=sys.stderr)
+        return 2
+    folder = Path(tempfile.mkdtemp(prefix="darzi-draft-"))
+    pdf = folder / "resume.pdf"
+    try:
+        result = renderer.render(resume, settings, pdf)
+    except InputError as exc:
+        shutil.rmtree(folder, ignore_errors=True)
+        print(_line(f"facts render: {exc}"), file=sys.stderr)
+        return 1 if isinstance(exc, RenderError) else 2
+    if as_json:
+        data = {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "pdf": str(pdf),
+            **asdict(result),
+        }
+        print(json.dumps(data, indent=2))
+    else:
+        print(
+            _line(
+                f"facts render: draft PDF {pdf}: {result.pages} pages "
+                f"({result.template}, {result.page_size}). "
+                "The run folder did not change."
+            )
+        )
     return 0
 
 
