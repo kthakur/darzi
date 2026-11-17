@@ -205,6 +205,28 @@ def test_absent_settings_stop_before_the_question(
     assert not selection_record(_ux(root)).exists()
 
 
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('signer = "owner"', 'signer = "-owner"'),
+        ('namespace = "darzi-approval"', 'namespace = "-darzi-approval"'),
+    ],
+    ids=["signer", "namespace"],
+)
+def test_a_value_that_starts_with_a_dash_stops_before_the_question(
+    root: Path, capsys: pytest.CaptureFixture[str], old: str, new: str
+) -> None:
+    toml = root / "facts.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert old in text
+    toml.write_text(text.replace(old, new), encoding="utf-8")
+    assert approve_steps(_ux(root), root, _no_ask, dt.date(2026, 11, 17)) == 1
+    err = capsys.readouterr().err
+    assert "cannot sign" in err and "not permitted" in err
+    assert not selection_record(_ux(root)).exists()
+    assert not sig_path(selection_record(_ux(root))).exists()
+
+
 def test_an_absent_key_file_stops_before_the_question(
     root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

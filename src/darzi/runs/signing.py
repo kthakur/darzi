@@ -44,12 +44,14 @@ MAX_SIG = 16 * 1024
 VERIFY_TIMEOUT = 30
 # The owner types the passphrase in this time.
 SIGN_TIMEOUT = 600
-# The sign call must not use an agent or a program that gives the passphrase.
+# The sign call and the verify call must not use an agent or a program that
+# gives the passphrase.
 SIGN_ENV_REMOVED = ("SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE")
 HASH = re.compile(r"[0-9a-f]{64}")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-# A signer or a namespace: visible ASCII with no space, quote or comma.
-NAME = re.compile(r"[A-Za-z0-9._@+-]+")
+# A signer or a namespace: visible ASCII with no space, quote or comma. The
+# first character is a letter or a digit, so a value cannot start with "-".
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]*")
 FINGERPRINT = re.compile(r"\bkey (SHA256:[A-Za-z0-9+/=]+)")
 
 
@@ -191,6 +193,7 @@ def _good_signature(
             args,
             input=data,
             capture_output=True,
+            env=sign_environment(),
             timeout=VERIFY_TIMEOUT,
             check=False,
         )
@@ -320,7 +323,7 @@ def key_path(settings: Approval) -> Path | None:
 
 
 def sign_environment() -> dict[str, str]:
-    """Return a copy of the environment for the sign call, with no agent.
+    """Return a copy of the environment for the sign and verify calls, no agent.
 
     SSH_AUTH_SOCK, SSH_ASKPASS and SSH_ASKPASS_REQUIRE are removed. Then only a
     passphrase that a person types at the terminal can open the key.

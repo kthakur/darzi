@@ -23,12 +23,15 @@ from darzi.facts.selection import is_approved, load_selection, selection_hash
 from darzi.runs import signing
 from darzi.runs.approve import run_is_approved
 from darzi.runs.signing import (
+    FINGERPRINT,
+    NAME,
     SSH_KEYGEN,
     Verdict,
     allowed_signers_path,
     key_path,
     record_bytes,
     selection_record,
+    settings_problem,
     sig_path,
     sign_environment,
     sign_record,
@@ -252,6 +255,46 @@ def test_an_absent_allowed_signers(root: Path) -> None:
     _not(_selection(root), "must be a file inside the data root")
 
 
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('signer = "owner"', 'signer = "-owner"'),
+        ('signer = "owner"', 'signer = "-n"'),
+        ('namespace = "darzi-approval"', 'namespace = "-darzi-approval"'),
+        ('namespace = "darzi-approval"', 'namespace = "-f"'),
+    ],
+    ids=["signer", "signer-option", "namespace", "namespace-option"],
+)
+def test_a_signer_or_namespace_that_starts_with_a_dash(
+    root: Path, old: str, new: str
+) -> None:
+    # A value that starts with "-" could look like an option to ssh-keygen.
+    _set_toml(root, old, new)
+    assert "not permitted" in settings_problem(root, _settings(root))
+    _not(_selection(root), "has characters that are not permitted")
+
+
+def test_the_synthetic_signer_and_namespace_are_permitted(root: Path) -> None:
+    # The values of tests/data/facts.toml and of spec section 5.
+    settings = _settings(root)
+    assert (settings.signer, settings.namespace) == ("owner", "darzi-approval")
+    assert settings_problem(root, settings) == ""
+
+
+@pytest.mark.parametrize(
+    "value", ["owner", "darzi-approval", "0", "a", "owner@example.com", "a1._@+-"]
+)
+def test_name_permits_a_first_letter_or_digit(value: str) -> None:
+    assert NAME.fullmatch(value)
+
+
+@pytest.mark.parametrize(
+    "value", ["", "-", "-owner", "--", ".owner", "_owner", "@owner", "+owner", "a b"]
+)
+def test_name_refuses_other_first_characters(value: str) -> None:
+    assert NAME.fullmatch(value) is None
+
+
 @pytest.mark.parametrize("name", ["signer", "namespace", "allowed_signers"])
 def test_an_absent_approval_setting(root: Path, name: str) -> None:
     toml = root / "facts.toml"
@@ -452,6 +495,40 @@ def test_a_good_exit_with_no_fingerprint_is_not_approved(
     _not(_selection(root), "is not valid")
 
 
+def test_a_bad_exit_with_a_fingerprint_is_not_approved(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The real output of a good verify, with a fingerprint, but a non-zero
+    # exit code. The exit code alone must give "not approved".
+    real = subprocess.run
+    outputs: list[str] = []
+
+    def failed(args: list[str], **kwargs: Any) -> Any:
+        result = real(args, **kwargs)
+        assert result.returncode == 0
+        outputs.append((result.stdout + result.stderr).decode("utf-8", "replace"))
+        return subprocess.CompletedProcess(args, 1, result.stdout, result.stderr)
+
+    monkeypatch.setattr(signing.subprocess, "run", failed)
+    _not(_selection(root), "is not valid")
+    [output] = outputs
+    assert FINGERPRINT.search(output)
+
+
+def test_a_bad_exit_with_a_made_up_fingerprint_is_not_approved(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = b'Good "darzi-approval" signature for owner with ED25519 key SHA256:'
+    text += b"A" * 43 + b"\n"
+    assert FINGERPRINT.search(text.decode())
+
+    def failed(args: list[str], **_kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(args, 255, text, b"")
+
+    monkeypatch.setattr(signing.subprocess, "run", failed)
+    _not(_selection(root), "is not valid")
+
+
 def test_verify_reads_the_record_one_time(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -474,6 +551,9 @@ def test_verify_reads_the_record_one_time(
 
 
 def test_the_verify_call(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"):
+        monkeypatch.setenv(name, "/tmp/x")
+    monkeypatch.setenv("DARZI_TEST_KEEP", "1")
     calls: list[tuple[list[str], dict[str, Any]]] = []
     real = subprocess.run
 
@@ -494,6 +574,10 @@ def test_the_verify_call(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "darzi-approval",
     ]
     assert "shell" not in kwargs and kwargs["timeout"] == 30
+    # The verify call gets the same cleaned environment as the sign call.
+    env = kwargs["env"]
+    assert not {"SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"} & set(env)
+    assert env["DARZI_TEST_KEEP"] == "1"
 
 
 def test_the_sign_call_has_no_agent(
@@ -612,7 +696,9 @@ def test_export_refuses_a_changed_selection(
 # --- Guards for hard rule 6 ---------------------------------------------------
 
 
-def test_src_reads_the_environment_only_for_the_sign_call() -> None:
+def test_src_reads_the_environment_only_for_the_ssh_keygen_calls() -> None:
+    # os.environ is read in one place only: sign_environment(). Only the verify
+    # call and the sign call use it.
     word = re.compile(r"os\.environ|environb|getenv|putenv|sign_environment\(\)")
     found = [
         f"{py.relative_to(SRC)}: {line.strip()}"
@@ -620,10 +706,11 @@ def test_src_reads_the_environment_only_for_the_sign_call() -> None:
         for line in py.read_text(encoding="utf-8").splitlines()
         if word.search(line)
     ]
-    assert len(found) == 3, found
-    assert found[0] == "runs/signing.py: def sign_environment() -> dict[str, str]:"
-    assert found[1] == "runs/signing.py: env = dict(os.environ)"
-    assert found[2].startswith("runs/signing.py: args, env=sign_environment(),")
+    assert len(found) == 4, found
+    assert found[0] == "runs/signing.py: env=sign_environment(),"
+    assert found[1] == "runs/signing.py: def sign_environment() -> dict[str, str]:"
+    assert found[2] == "runs/signing.py: env = dict(os.environ)"
+    assert found[3].startswith("runs/signing.py: args, env=sign_environment(),")
 
 
 def test_src_has_no_shell_call_and_one_program() -> None:
