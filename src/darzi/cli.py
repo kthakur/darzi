@@ -5,6 +5,7 @@ Each command comes with its work item of docs/SPEC.md section 11. Exit codes:
 """
 
 import argparse
+import datetime as dt
 import json
 import sys
 from collections.abc import Sequence
@@ -28,14 +29,14 @@ from darzi.facts.rules import validate_rules
 from darzi.facts.selection import check_selection, load_selection
 from darzi.facts.validate import Finding, validate
 from darzi.runs.approve import safe
+from darzi.runs.runs import new_run
+from darzi.runs.status import RunRow, list_runs
 from darzi.schemas import MASTER, RULES, SELECTION, load_schema
 
 JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "new-run": "W-4",
-    "status": "W-4",
     "approve": "W-5",
     "render": "W-6",
     "finalize": "W-8",
@@ -83,6 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_cmd.add_argument("selection", type=Path, help="selections/<type>.yaml")
     export_cmd.add_argument("--run", type=Path, required=True, help="run folder")
+    new_cmd = sub.add_parser(
+        "new-run", parents=[common], help="make a run folder and save job.md first"
+    )
+    new_cmd.add_argument("--company", required=True)
+    new_cmd.add_argument("--role", required=True)
+    source = new_cmd.add_mutually_exclusive_group(required=True)
+    source.add_argument("--job", type=Path, help="job post file, or - for stdin")
+    source.add_argument("--url", help="job post link (not built yet: W-10)")
+    sub.add_parser("status", parents=[common], help="list all runs")
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -106,6 +116,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _public(args.repo)
     if command == "query":
         return _query(args.repo, args.tags, args.text, args.json)
+    if command == "new-run":
+        if args.url is not None:
+            return _new_run_url()
+        return _new_run(args.company, args.role, args.job, args.repo, args.json)
+    if command == "status":
+        return _status(args.repo, args.json)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -265,6 +281,125 @@ def _query(repo_arg: Path | None, tags: str, text: str | None, as_json: bool) ->
         print(f"{hit['id']}  [{hit['entry']}] {tags}{mark}\n    {hit['text']}")
     print(f"{len(hits)} bullets.")
     return 0
+
+
+def _today() -> dt.date:
+    """Return the date of a new run: today."""
+    return dt.date.today()
+
+
+def _new_run_url() -> int:
+    # Work item W-10 builds the fetch. Until then --url makes no folder and no
+    # network call.
+    print(
+        "facts new-run: --url is not built yet. It comes in work item W-10. "
+        "Save the job post to a file and pass --job FILE, "
+        "or paste it with --job -.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _read_job(job: Path) -> str:
+    """Return the job post from the file `job`, or from stdin when `job` is "-".
+
+    Raises InputError when the file is missing or cannot be read, and when the
+    text is not UTF-8.
+    """
+    if str(job) == "-":
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InputError(
+                "The text from stdin is not UTF-8 text. "
+                "Paste the job post as plain text, or save it as a UTF-8 file "
+                "and pass --job FILE."
+            ) from exc
+        # The same line ends as a file that is read in text mode.
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        return job.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise InputError(
+            f"{job} does not exist. Pass the job post file with --job FILE, "
+            "or paste the job post with --job -."
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise InputError(
+            f"{job} is not UTF-8 text. Save the job post as plain text (UTF-8), "
+            "or paste it with --job -."
+        ) from exc
+    except OSError as exc:
+        raise InputError(
+            f"{job} cannot be read: {exc.strerror}. Check the path, "
+            "or paste the job post with --job -."
+        ) from exc
+
+
+def _new_run(
+    company: str, role: str, job: Path, repo_arg: Path | None, as_json: bool
+) -> int:
+    # Invalid input gives exit code 2 (docs/SPEC.md section 6): no data root; a
+    # job post that is missing, cannot be read, is not UTF-8 or is empty; a
+    # company or role that gives an empty name; a run folder that exists.
+    try:
+        text = _read_job(job)
+        run = new_run(find_repo(repo_arg), company, role, text, _today())
+    except InputError as exc:
+        print(f"facts new-run: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"facts new-run: cannot write the run folder: {exc}", file=sys.stderr)
+        return 1
+    if as_json:
+        data = {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "command": "new-run",
+            "run": str(run),
+        }
+        print(json.dumps(data, indent=2))
+        return 0
+    print(run)
+    return 0
+
+
+def _status(repo_arg: Path | None, as_json: bool) -> int:
+    try:
+        repo = find_repo(repo_arg)
+        rows, findings = list_runs(repo)
+    except InputError as exc:
+        print(f"facts status: {exc}", file=sys.stderr)
+        return 2
+    report = _report_data("status", repo, findings)
+    if as_json:
+        report["runs"] = [asdict(row) for row in rows]
+        print(json.dumps(report, indent=2))
+    else:
+        _print_runs(rows, findings)
+    return 1 if report["errors"] else 0
+
+
+def _cell(value: str | None) -> str:
+    if value is None:
+        return "-"
+    # A line end or a tab would break the table: show it as "?".
+    return safe(value.replace("\n", "?").replace("\t", "?"))
+
+
+def _print_runs(rows: list[RunRow], findings: list[Finding]) -> None:
+    if rows:
+        table = [["DATE", "COMPANY", "ROLE", "TYPE", "STATUS"]]
+        table += [
+            [_cell(v) for v in (r.date, r.company, r.role, r.type, r.status)]
+            for r in rows
+        ]
+        widths = [max(len(line[i]) for line in table) for i in range(5)]
+        for line in table:
+            cells = zip(line, widths, strict=True)
+            print(safe("  ".join(c.ljust(w) for c, w in cells).rstrip()))
+    for f in findings:
+        print(safe(f"{f.severity} {f.rule} {f.location}: {f.message}"))
+    print(safe(f"{len(rows)} runs."))
 
 
 def _report_data(command: str, target: Path, findings: list[Finding]) -> dict[str, Any]:
