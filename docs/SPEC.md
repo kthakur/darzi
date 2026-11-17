@@ -322,7 +322,7 @@ class Renderer(Protocol):
   no record other than the one scratch record, `frontend_url` and
   `backend_url` must be `http` on a loopback address, the CLI runs with an
   empty `DATABASE_URL` and with `uv run --no-sync`, and a lock file in the
-  data folder stops two renders at the same time.
+  system temporary folder stops two renders at the same time.
 - Resume Matcher can change the JSON when it stores it. So the adapter does not
   compare JSON. The round-trip check decides.
 
