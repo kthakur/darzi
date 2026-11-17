@@ -28,3 +28,18 @@ jobs:
       - run: uv run ruff format --check
       - run: uv run pyright
       - run: uv run pytest
+
+  # Keep this job separate, not a matrix, to preserve the required check name.
+  check-py314:
+    # GitHub-hosted runner only. Never use a self-hosted runner (AGENTS.md).
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.14"
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.14"
+      - run: uv sync --locked
+      - run: uv run python --version
+      - run: uv run pytest
