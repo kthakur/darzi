@@ -1,6 +1,7 @@
 """The `facts` command: help, version, planned commands and `facts validate`."""
 
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -209,6 +210,66 @@ def test_validate_warning_only_exit_0(
     out = capsys.readouterr().out
     assert "warning D-8 roles[acme]:" in out
     assert "0 errors, 1 warnings" in out
+
+
+@pytest.fixture
+def data_root(tmp_path: Path) -> Path:
+    """A temporary copy of the synthetic data root that a test can change."""
+    root = tmp_path / "root"
+    shutil.copytree(DATA, root)
+    return root
+
+
+def _export(root: Path, run: Path) -> int:
+    selection = root / "selections" / "corporate-tech.yaml"
+    return main(["export", str(selection), "--run", str(run), "--repo", str(root)])
+
+
+def test_export_writes_utf8_text_and_one_last_newline(
+    data_root: Path, tmp_path: Path
+) -> None:
+    master = data_root / "master.yaml"
+    text = master.read_text(encoding="utf-8")
+    old = "Designed a new checkout flow"
+    assert old in text
+    master.write_text(
+        text.replace(old, "Designed a new caf\u00e9 checkout flow"), encoding="utf-8"
+    )
+    run = tmp_path / "run"
+    assert _export(data_root, run) == 0
+    raw = (run / "base.json").read_text(encoding="utf-8")
+    assert "caf\u00e9 checkout" in raw  # the character itself, not a \u escape
+    assert "\\u00e9" not in raw
+    for name in ("base.json", "base.map.json"):
+        written = (run / name).read_text(encoding="utf-8")
+        assert written.endswith("}\n") and not written.endswith("\n\n"), name
+        assert json.loads(written)
+
+
+def test_export_reads_the_open_questions(
+    data_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    questions = data_root / "questions.md"
+    text = questions.read_text(encoding="utf-8")
+    old = "Affects: acme-accessibility"
+    assert old in text
+    questions.write_text(text.replace(old, "Affects: globex-portal"), encoding="utf-8")
+    run = tmp_path / "run"
+    assert _export(data_root, run) == 1
+    assert not (run / "base.json").exists()
+    assert not run.exists()
+    out = capsys.readouterr().out
+    assert "error D-21 selection: work[1] globex:" in out
+    assert "1 errors, 0 warnings" in out
+    # Control: the same question under "Resolved" no longer blocks the export.
+    assert "## Resolved\n" in text
+    resolved = text.replace(
+        "## Resolved\n",
+        "## Resolved\n\n- **3.** Synthetic.\n  Affects: globex-portal\n",
+    )
+    questions.write_text(resolved, encoding="utf-8")
+    assert _export(data_root, run) == 0
+    assert (run / "base.json").is_file()
 
 
 def test_report_hides_invisible_characters(

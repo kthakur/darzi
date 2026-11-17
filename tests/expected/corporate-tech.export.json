@@ -1,0 +1,140 @@
+{
+  "base": {
+    "personalInfo": {
+      "name": "Test Person",
+      "title": "UX Researcher",
+      "email": "test.person@example.com",
+      "phone": "555-0100",
+      "location": "Springfield, ST",
+      "website": "https://portfolio.example.com"
+    },
+    "summary": "UX Researcher.",
+    "workExperience": [
+      {
+        "id": 1,
+        "title": "Senior Product Designer",
+        "company": "Acme",
+        "location": "Springfield, ST",
+        "years": "Mar 2021 - Present",
+        "description": [
+          "Ran 20 user interviews to shape the account settings pages.",
+          "Designed a new checkout flow that cut drop-off by 12%."
+        ],
+        "condensed": false
+      },
+      {
+        "id": 2,
+        "title": "UX Designer",
+        "company": "Globex",
+        "location": "Shelbyville, ST",
+        "years": "Feb 2019 - Jan 2021",
+        "description": [
+          "Designed the partner portal in React with the engineering team."
+        ],
+        "condensed": false
+      }
+    ],
+    "personalProjects": [],
+    "education": [
+      {
+        "id": 1,
+        "institution": "Example University",
+        "degree": "B.A. Graphic Design",
+        "years": "2006 - 2009"
+      }
+    ],
+    "additional": {
+      "technicalSkills": [
+        "User research",
+        "Usability testing",
+        "Figma"
+      ]
+    },
+    "sectionMeta": [
+      {
+        "id": "personalInfo",
+        "key": "personalInfo",
+        "displayName": "Personal Info",
+        "sectionType": "personalInfo",
+        "isDefault": true,
+        "isVisible": true,
+        "order": 0
+      },
+      {
+        "id": "summary",
+        "key": "summary",
+        "displayName": "Summary",
+        "sectionType": "text",
+        "isDefault": true,
+        "isVisible": true,
+        "order": 1
+      },
+      {
+        "id": "workExperience",
+        "key": "workExperience",
+        "displayName": "Experience",
+        "sectionType": "itemList",
+        "isDefault": true,
+        "isVisible": true,
+        "order": 2
+      },
+      {
+        "id": "education",
+        "key": "education",
+        "displayName": "Education",
+        "sectionType": "itemList",
+        "isDefault": true,
+        "isVisible": true,
+        "order": 3
+      },
+      {
+        "id": "additional",
+        "key": "additional",
+        "displayName": "Skills",
+        "sectionType": "stringList",
+        "isDefault": true,
+        "isVisible": true,
+        "order": 4
+      }
+    ],
+    "customSections": {}
+  },
+  "base_map": {
+    "schema_version": 1,
+    "type": "corporate-tech",
+    "selection": "selections/corporate-tech.yaml",
+    "entries": [
+      {
+        "section": "workExperience",
+        "rm_id": 1,
+        "id": "acme",
+        "bullets": [
+          "acme-research",
+          "acme-checkout"
+        ]
+      },
+      {
+        "section": "workExperience",
+        "rm_id": 2,
+        "id": "globex",
+        "bullets": [
+          "globex-portal"
+        ]
+      },
+      {
+        "section": "education",
+        "rm_id": 1,
+        "id": "example-u-ba"
+      }
+    ],
+    "skills": [
+      "User research",
+      "Usability testing",
+      "Figma"
+    ],
+    "max_pages": 1,
+    "summary_basis": [
+      "acme-research"
+    ]
+  }
+}

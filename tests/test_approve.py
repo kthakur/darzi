@@ -31,3 +31,9 @@ def test_safe_keeps_normal_text() -> None:
     # Visible non-ASCII: e acute, en dash, curly quotes, i diaeresis.
     text = "Caf\u00e9 \u2013 \u201cquoted\u201d 40% $5 na\u00efve\tok\nnext"
     assert safe(text) == text
+
+
+def test_safe_keeps_combining_accent() -> None:
+    # "e" followed by U+0301 (combining acute accent) is visible text.
+    text = "Cafe\u0301 menu"
+    assert safe(text) == text

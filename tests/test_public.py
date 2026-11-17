@@ -175,6 +175,29 @@ def test_pv3_public_contact_passes(public: dict[str, Any]) -> None:
     assert privacy_findings(data, RULES) == []
 
 
+@pytest.mark.parametrize("shown", ["(555) 555-0100", "555.555.0100", "555 555 0100"])
+def test_pv3_public_phone_in_other_format_passes(shown: str) -> None:
+    """A 10-digit public phone passes in any format the phone pattern finds."""
+    rules = copy.deepcopy(RULES)
+    rules["public_contact"]["phone"] = "555-555-0100"
+    data = public_copy(MASTER, rules)
+    assert data["profile"]["phone"] == "555-555-0100"
+    _bullet(data, "acme-checkout")["text"] = f"Call {shown} after noon."
+    assert privacy_findings(data, rules) == []
+
+
+def test_pv3_other_10_digit_phone_is_found() -> None:
+    rules = copy.deepcopy(RULES)
+    rules["public_contact"]["phone"] = "555-555-0100"
+    data = public_copy(MASTER, rules)
+    _bullet(data, "acme-checkout")["text"] = "Call 555-555-0101 after noon."
+    findings = privacy_findings(data, rules)
+    assert [(f.rule, f.location) for f in findings] == [
+        ("R-1", "roles[acme].bullets[acme-checkout].text")
+    ]
+    assert "'555-555-0101'" in findings[0].message
+
+
 def test_pv3_term_allowed_only_in_approved_bullet(public: dict[str, Any]) -> None:
     rules = copy.deepcopy(RULES)
     rules["privacy_patterns"]["allowed_bullet_ids"] = ["acme-checkout"]

@@ -49,6 +49,11 @@ def test_find_regex() -> None:
     assert [m.text for m in found] == ["9+ years"]
 
 
+def test_find_regex_ignores_case() -> None:
+    found = find_regex("Over 9+ YEARS in UX", [r"\b\d+\s*\+?\s*years?\b"])
+    assert [m.text for m in found] == ["9+ YEARS"]
+
+
 def test_empty_term_is_refused() -> None:
     with pytest.raises(ValueError):
         term_regex("  ")

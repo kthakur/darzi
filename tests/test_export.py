@@ -25,6 +25,8 @@ MASTER = load_master(DATA)
 SCHEMA = load_schema(SELECTION)
 UX = DATA / "selections" / "ux.yaml"
 CORPORATE = DATA / "selections" / "corporate-tech.yaml"
+# The export of CORPORATE, the same as the source export gives for this data.
+PINNED = Path(__file__).resolve().parent / "expected" / "corporate-tech.export.json"
 
 
 @pytest.fixture
@@ -167,6 +169,21 @@ def test_d21_education(selection: dict[str, Any]) -> None:
     assert errors(selection) == ["D-21"]
 
 
+def test_d21_education_excluded_for_this_type(corporate: dict[str, Any]) -> None:
+    master = copy.deepcopy(MASTER)
+    school = next(e for e in master["education"] if e["id"] == "example-u-ba")
+    school["exclude_from"] = ["corporate-tech"]
+    findings = check_selection(corporate, SCHEMA, master, RULES, {})
+    assert [(f.rule, f.location) for f in findings] == [
+        ("D-21", "selection: education example-u-ba")
+    ]
+    assert "corporate-tech" in findings[0].message
+    corporate["type"] = "ux"
+    assert errors(corporate, master=master) == []  # allowed for ux
+    school["exclude_from"] = ["all"]
+    assert errors(corporate, master=master) == ["D-21"]
+
+
 # The selection hash
 
 
@@ -266,6 +283,50 @@ def test_export_projects_and_education(selection: dict[str, Any]) -> None:
     assert [m["section"] for m in base_map["entries"]] == (
         ["workExperience"] * 4 + ["personalProjects"] + ["education"] * 2
     )
+
+
+def test_export_pinned_corporate_tech(corporate: dict[str, Any]) -> None:
+    """The full result for one synthetic selection, checked against the source."""
+    expected = json.loads(PINNED.read_text(encoding="utf-8"))
+    base, base_map = export(
+        public_copy(MASTER, RULES), corporate, "selections/corporate-tech.yaml", RULES
+    )
+    assert base == expected["base"]
+    assert base_map == expected["base_map"]
+
+
+def test_export_collapses_white_space_in_bullets(corporate: dict[str, Any]) -> None:
+    master = copy.deepcopy(MASTER)
+    acme = next(r for r in master["roles"] if r["id"] == "acme")
+    bullet = next(b for b in acme["bullets"] if b["id"] == "acme-checkout")
+    bullet["text"] = "  Designed a new\n  checkout\tflow   that cut drop-off by 12%.\n"
+    base, _ = build_base(public_copy(master, RULES), corporate, "sel.yaml")
+    assert base["workExperience"][0]["description"][1] == (
+        "Designed a new checkout flow that cut drop-off by 12%."
+    )
+
+
+def test_export_drops_no_degree_suffix(corporate: dict[str, Any]) -> None:
+    master = copy.deepcopy(MASTER)
+    school = next(e for e in master["education"] if e["id"] == "example-u-ba")
+    school["credential"] = "B.A. Graphic Design (no degree)"
+    base, _ = build_base(public_copy(master, RULES), corporate, "sel.yaml")
+    assert base["education"][0]["degree"] == "B.A. Graphic Design"
+
+
+@pytest.mark.parametrize("location", ["", None, "absent"])
+def test_export_empty_location_is_null(
+    corporate: dict[str, Any], location: str | None
+) -> None:
+    master = copy.deepcopy(MASTER)
+    acme = next(r for r in master["roles"] if r["id"] == "acme")
+    if location == "absent":
+        del acme["location"]
+    else:
+        acme["location"] = location
+    base, _ = build_base(public_copy(master, RULES), corporate, "sel.yaml")
+    assert base["workExperience"][0]["location"] is None
+    assert base["workExperience"][1]["location"] == "Shelbyville, ST"
 
 
 def test_export_refuses_a_bullet_that_is_not_public(selection: dict[str, Any]) -> None:

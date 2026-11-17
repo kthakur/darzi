@@ -245,10 +245,36 @@ def test_never_as_company_ids_exist(
     assert set(rules["never_as_company"]["freelance_only"]) <= ids
 
 
-def test_not_working_periods_are_ordered(rules: dict[str, Any]) -> None:
-    periods = rules["not_working_periods"]["periods"]
+def _assert_periods_ordered(periods: list[dict[str, Any]]) -> None:
     assert all(p["from"] <= p["to"] for p in periods)
     assert [p["from"] for p in periods] == sorted(p["from"] for p in periods)
+
+
+def test_not_working_periods_are_ordered(rules: dict[str, Any]) -> None:
+    _assert_periods_ordered(rules["not_working_periods"]["periods"])
+
+
+LATER = {"from": "2020-03", "to": "2020-06", "source": "confirmed"}
+EARLIER = {"from": "2016-05", "to": "2016-09", "source": "confirmed"}
+BACKWARD = {"from": "2020-06", "to": "2020-03", "source": "confirmed"}
+
+
+def test_period_order_check_with_two_periods(
+    rules: dict[str, Any], rules_schema: dict[str, Any]
+) -> None:
+    """The order check can fail; validate_rules does not check the order."""
+    first = rules["not_working_periods"]["periods"][0]
+    sorted_rules = copy.deepcopy(rules)
+    sorted_rules["not_working_periods"]["periods"] = [first, LATER]
+    _assert_periods_ordered(sorted_rules["not_working_periods"]["periods"])
+    assert validate_rules(sorted_rules, rules_schema) == []
+
+    for wrong in ([first, EARLIER], [first, BACKWARD]):
+        unsorted_rules = copy.deepcopy(rules)
+        unsorted_rules["not_working_periods"]["periods"] = wrong
+        with pytest.raises(AssertionError):
+            _assert_periods_ordered(unsorted_rules["not_working_periods"]["periods"])
+        assert validate_rules(unsorted_rules, rules_schema) == []
 
 
 def test_rules_yaml_loads_with_safe_load() -> None:

@@ -115,7 +115,7 @@ def test_d3_unknown_source_anywhere(
 # D-4: dates
 
 
-@pytest.mark.parametrize("value", ["2019-07", "2019", 1995, "present", ""])
+@pytest.mark.parametrize("value", ["2023-02", "2011", 2004, "present", ""])
 def test_d4_valid_dates(
     master: dict[str, Any], schema: dict[str, Any], value: Any
 ) -> None:
@@ -123,7 +123,7 @@ def test_d4_valid_dates(
     assert validate(master, schema) == []
 
 
-@pytest.mark.parametrize("value", ["2019-13", "Aug 2019", "2019-7", "now", 19])
+@pytest.mark.parametrize("value", ["2022-14", "Feb 2023", "2023-2", "today", 42])
 def test_d4_invalid_dates(
     master: dict[str, Any], schema: dict[str, Any], value: Any
 ) -> None:
