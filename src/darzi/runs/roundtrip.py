@@ -38,22 +38,35 @@ For a cover letter, each paragraph must be there, in the approved order.
 An approved item that is empty after normalization adds no text, so the check
 skips it.
 
-The ends of a match. Where an item starts or ends with a letter or a digit, the
-file must have no letter or digit directly before or after it, so "Go" does not
-match inside "Google". A phone number must not go on with more digits (after
-spaces, dots, dashes or brackets). An email address or a link must not go on
-with a ".", "-", "_" or "/" and then a letter or digit, so a longer domain or a
-longer path does not match; a dot or a slash at its end is accepted. A single
-date must not be one end of a range ("Jan 2020" does not match in "Jan 2020 -
-Dec 2020"); a date that is approved as a range can be a range.
+The ends of a match: one token rule for each item. An approved item must stand
+as a complete token in the file; the text on each side must not join it into a
+longer token. A letter, a digit or a combining mark directly next to the item
+joins ("Go" does not match inside "Google"). A joiner sign directly next to the
+item joins when a letter, a digit or a mark is on the other side of the sign:
+`+ # / . - _ & @ '` and the en and em dashes, and also `? = :` for an email
+address or a link ("Acme" does not match in "Acme-Widgets", ".NET" not in
+"ASP.NET", a link not in the same link with a query). After an item that ends
+in a letter or a digit, a "+" or a "#" joins also alone ("C" does not match in
+"C#" or "C++"). White space, a comma, a semicolon, a bracket, a quote mark, a
+bullet sign, the start or the end of the text, and a dot before white space do
+not join. A link may have "www." or a scheme ("https://") in front. The kinds of
+item add their own points: a phone number must not go on with more digits
+after spaces, dots, dashes or brackets; a single date must not be one end of a
+range (a dash before a word, or "to", "until" or "through" before a second
+date), and a year must not have a month name in front of it; a date that is
+approved as a range can be a range.
 
 One place for each item. Each item claims its own span of the extracted text,
 and no two items use the same text. So a company does not match inside a
 bullet, and a role does not match inside the project name. The walk claims the
 spans of the ordered items, each at its first free match after the previous
-one. It also claims the line of each section heading, when that line comes
-before the first item of the section, so that a skill does not match inside a
-heading; a heading that is not there gives no finding. Then the other fields of
+one. It also claims each fixed heading line, when that line comes before the
+first item of its part, so that an item does not match inside a heading: the
+line of each section heading; the "Earlier experience" line above the condensed
+entries; and in a Word file the heading line of the languages, the
+certifications and the awards (`ADDITIONAL_HEADINGS` of the Word writer). A
+heading must be a full line. A heading that is not there gives no finding.
+Then the other fields of
 each part share out the free text of the part: the check tries the placements
 and passes when each field gets its own span. A field with no free span is
 missing.
@@ -63,14 +76,27 @@ place where it does not touch an approved item (an added bullet, an added
 sentence, an added skill, a changed personal title); hidden text (white, very
 small, off the page); words in a wrong letter case; a field that the check does
 not test (the personal title, the links of a project, a custom section); a
-section heading that is not there. The check can fail a correct file: a
-template with two columns, whose text order is not the section order; a font
-with no Unicode map; a page header or footer inside an item; a value that the
-template shows in a form not listed above; an HTML entity such as `&amp;` in a
-PDF bullet; a tag other than the four that the template keeps (for example
-`<b>`) in a PDF bullet, because the template removes it and the check expects
-it as text; text that the PDF extraction runs together with no space, also
-between two fields (for example a title and its dates).
+heading that is not there; a missing item whose text is a word of a fixed
+label of the PDF template, because the check does not claim these labels: the
+template shows "Technical Skills:", "Languages:", "Certifications:" and
+"Awards:" on the same line in front of each list, so for example a missing
+skill "Skills" can match inside "Technical Skills:"; a missing item whose text
+the file shows inside a longer token that the rule above does not see as one
+(two words with only a space between them, for example "Acme" in "Acme
+Widgets"; a sign that is not a joiner, for example "Acme" in "Acme~Widgets").
+The check can fail a correct file: a template with two columns, whose text
+order is not the section order; a font with no Unicode map; a page header or
+footer inside an item; a value that the template shows in a form not listed
+above; an HTML entity such as `&amp;` in a PDF bullet; a tag other than the four
+that the template keeps (for example `<b>`) in a PDF bullet, because the
+template removes it and the check expects it as text; text that the PDF
+extraction runs together with no space, also between two fields (for example a
+title and its dates); an item that the file correctly shows next to a joiner
+and more text (for example a skill "C" in a list "C/Python" with no spaces, or
+a company followed by "'s"); a field whose text occurs more than `MAX_OPTIONS`
+times in its part, where the first matches are all in use by other fields
+(`place` tries only the first `MAX_OPTIONS` matches of a field, so it stops in
+a short time; the result is a finding, never a pass).
 """
 
 import functools
@@ -86,7 +112,7 @@ from docx import Document
 from pypdf import PdfReader
 
 from darzi.facts.validate import Finding
-from darzi.render.word import section_order
+from darzi.render.word import ADDITIONAL_HEADINGS, EARLIER_EXPERIENCE, section_order
 
 RULE = "roundtrip"
 Kind = Literal["pdf", "docx"]
@@ -100,31 +126,39 @@ _LINE_BREAKS = "\n\r\x0b\x0c\x85\u2028\u2029"
 # The tags that the template keeps in a bullet: ALLOWED_TAGS in
 # apps/frontend/lib/utils/html-sanitizer.ts. Other "<...>" text stays text.
 _TAG = re.compile(r"</?(?:strong|em|u|a)(?:\s[^<>]*)?/?>", re.IGNORECASE)
-_ALNUM = r"[^\W_]"
-_NOT_AFTER_ALNUM = rf"(?<!{_ALNUM})"
-_NOT_BEFORE_ALNUM = rf"(?!{_ALNUM})"
+# The Unicode categories of a combining mark. A mark is a part of its word.
+_MARKS = frozenset({"Mn", "Mc", "Me"})
 _DASHES = "\\-\u2013\u2014"
-_SPACES = ("", " ", "\n")
-# Rules at the start and at the end of a match, for each token. A phone number
-# must not go on with more digits; an email address or a link must not go on
-# with more domain or path; a single date must not be one end of a range; a
-# heading must be a full line.
+# The signs that join the text on their two sides into one token.
+_JOINERS = frozenset("+#/.-_&@'\u2013\u2014")
+# In an email address or a link, these signs join too (a query, a port).
+_LINK_JOINERS = _JOINERS | frozenset("?=:")
+# After a letter or a digit, these signs make a longer name ("C" in "C#" or
+# "C++"), also with no letter or digit after them.
+_NAME_ENDS = frozenset("+#")
+_SPACE = "[ \n]"
+_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?"
+    r"|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+)
+_RANGE_WORD = "(?:to|until|through)"
+# The signs of a date range: a dash before a word, or a range word before a date.
+_DASH_AFTER = re.compile(rf"{_SPACE}?[{_DASHES}]{_SPACE}?")
+_DASH_BEFORE = re.compile(rf"{_SPACE}?[{_DASHES}]{_SPACE}?$")
+_WORD_AFTER = re.compile(
+    rf"{_SPACE}{_RANGE_WORD}{_SPACE}(?:{_MONTH}{_SPACE})?"
+    r"(?:\d|present|current|now|ongoing)"
+)
+_WORD_BEFORE = re.compile(rf"\d{_SPACE}{_RANGE_WORD}{_SPACE}$")
+_MONTH_BEFORE = re.compile(rf"(?<![^\W_]){_MONTH}{_SPACE}$")
+# Rules of a token at the start and at the end of a match, in the expression.
+# A phone number must not go on with more digits after a separator; a heading
+# must be a full line. The rules of `_joins` apply to each token.
 _TOKEN_BEFORE: dict[Token, str] = {
-    "text": "",
     "phone": r"(?<!\d[ .()\-])",
-    "address": rf"(?<!{_ALNUM}[._\-])",
-    "date": "".join(
-        rf"(?<!{_ALNUM}{a}[{_DASHES}]{b})" for a in _SPACES for b in _SPACES
-    ),
     "heading": r"(?<![^\n])",
 }
-_TOKEN_AFTER: dict[Token, str] = {
-    "text": "",
-    "phone": r"(?![ .()\-]*\d)",
-    "address": rf"(?![./_\-]{_ALNUM})",
-    "date": rf"(?![ \n]?[{_DASHES}][ \n]?{_ALNUM})",
-    "heading": r"(?![^\n])",
-}
+_TOKEN_AFTER: dict[Token, str] = {"phone": r"(?![ .()\-]*\d)", "heading": r"(?![^\n])"}
 _ZIP_HEAD = b"PK\x03\x04"
 _PDF_HEAD = b"%PDF-"
 
@@ -141,9 +175,9 @@ class Item:
 
 @dataclass
 class Part:
-    """A part of the file: its heading, items in a fixed order, items anywhere."""
+    """A part of the file: its heading lines, items in a fixed order, items anywhere."""
 
-    heading: Item | None = None
+    headings: list[Item] = field(default_factory=list[Item])
     ordered: list[Item] = field(default_factory=list[Item])
     inside: list[Item] = field(default_factory=list[Item])
 
@@ -327,11 +361,11 @@ def resume_parts(resume: dict[str, Any], kind: Kind) -> list[Part]:
         elif key == "education":
             section = _education(resume.get("education") or [], kind)
         elif key == "additional":
-            section.append(_additional(resume.get("additional") or {}))
+            section = _additional(resume.get("additional") or {}, kind)
         if section:
             headings: list[Item] = []
             _add(headings, f"sectionMeta.{key}.displayName", label, token="heading")
-            section[0].heading = headings[0] if headings else None
+            section[0].headings[:0] = headings
         parts += section
     return parts
 
@@ -351,6 +385,11 @@ def _experience(entries: list[dict[str, Any]], kind: Kind) -> list[Part]:
         _add(part.inside, f"{where}.location", entry.get("location"))
         _bullets(part, where, entry.get("description") or [], kind)
         full.append(part)
+    if condensed:
+        # The subheading above the condensed entries, in the Word file and in
+        # the template (earlier-experience.tsx).
+        where = "workExperience.earlierExperience"
+        _add(condensed[0].headings, where, EARLIER_EXPERIENCE, token="heading")
     return full + condensed
 
 
@@ -385,12 +424,24 @@ def _education(entries: list[dict[str, Any]], kind: Kind) -> list[Part]:
     return parts
 
 
-def _additional(additional: dict[str, Any]) -> Part:
-    part = Part()
-    for key in ("technicalSkills", "languages", "certificationsTraining", "awards"):
-        for i, value in enumerate(additional.get(key) or []):
+def _additional(additional: dict[str, Any], kind: Kind) -> list[Part]:
+    """Return one part for each list of the additional section that has values.
+
+    In a Word file, each list after the skills has its own heading line
+    (`ADDITIONAL_HEADINGS` of the Word writer); the part claims that line.
+    """
+    parts: list[Part] = []
+    for key, title in (("technicalSkills", None), *ADDITIONAL_HEADINGS):
+        values: list[Any] = additional.get(key) or []
+        if not values:
+            continue
+        part = Part()
+        if kind == "docx":
+            _add(part.headings, f"additional.{key}.heading", title, token="heading")
+        for i, value in enumerate(values):
             _add(part.ordered, f"additional.{key}[{i}]", value)
-    return part
+        parts.append(part)
+    return parts
 
 
 def _bullets(part: Part, where: str, lines: Sequence[Any], kind: Kind) -> None:
@@ -443,9 +494,9 @@ def _pattern(form: str, token: Token) -> re.Pattern[str]:
 
     A space matches a space or a line break. A line break may follow a hyphen of
     the item, and a hyphen with a line break may come between two letters or
-    digits (a word broken at a line end). Where the item starts or ends with a
-    letter or a digit, the text must have no letter or digit directly before or
-    after it. The token adds the rules of `_TOKEN_BEFORE` and `_TOKEN_AFTER`.
+    digits (a word broken at a line end). The token adds the rules of
+    `_TOKEN_BEFORE` and `_TOKEN_AFTER`; `_spans` applies the token rule of
+    `_joins` to each match.
     """
     parts: list[str] = []
     for i, char in enumerate(form):
@@ -459,11 +510,63 @@ def _pattern(form: str, token: Token) -> re.Pattern[str]:
         elif char.isalnum() and after.isalnum():
             parts.append("(?:-\n)?")
     body = "".join(parts)
-    if form[0].isalnum():
-        body = _NOT_AFTER_ALNUM + body
-    if form[-1].isalnum():
-        body += _NOT_BEFORE_ALNUM
-    return re.compile(_TOKEN_BEFORE[token] + body + _TOKEN_AFTER[token])
+    before, after = _TOKEN_BEFORE.get(token, ""), _TOKEN_AFTER.get(token, "")
+    return re.compile(before + body + after)
+
+
+def _is_word(char: str) -> bool:
+    """Return True for a letter, a digit or a combining mark."""
+    return char.isalnum() or unicodedata.category(char) in _MARKS
+
+
+def _joins(text: str, span: Span, token: Token) -> bool:
+    """Return True when the text next to `span` joins it into a longer token.
+
+    The rule is the same on each side of each item: a letter, a digit or a
+    combining mark directly next to it joins; a joiner sign directly next to it
+    joins when a letter, a digit or a mark is on the other side of the sign.
+    After an item that ends in a letter or a digit, a "+" or a "#" joins also
+    alone ("C#" is a different name from "C"). White space, other punctuation,
+    the start or the end of the text, and a dot before white space do not join.
+    A link may have "www." or "://" in front. A single date must also not be
+    one end of a range, and a year must not have a month in front.
+    """
+    start, end = span
+    joiners = _LINK_JOINERS if token == "address" else _JOINERS
+    first = (
+        start - 4 if token == "address" and text.endswith("www.", 0, start) else start
+    )
+    if first > 0:
+        char = text[first - 1]
+        if _is_word(char) or (
+            char in joiners and first > 1 and _is_word(text[first - 2])
+        ):
+            return True
+    if end < len(text):
+        char = text[end]
+        if _is_word(char) or (
+            char in joiners and end + 1 < len(text) and _is_word(text[end + 1])
+        ):
+            return True
+        if char in _NAME_ENDS and _is_word(text[end - 1]):
+            return True
+    return token == "date" and _in_range(text, start, end)
+
+
+def _in_range(text: str, start: int, end: int) -> bool:
+    """Return True when the date at text[start:end] is one end of a range."""
+    dash = _DASH_AFTER.match(text, end)
+    if dash and dash.end() < len(text) and _is_word(text[dash.end()]):
+        return True
+    if _WORD_AFTER.match(text, end):
+        return True
+    dash = _DASH_BEFORE.search(text, max(0, start - 3), start)
+    if dash and dash.start() > 0 and _is_word(text[dash.start() - 1]):
+        return True
+    if _WORD_BEFORE.search(text, max(0, start - 12), start):
+        return True
+    year = text[start].isdigit()
+    return year and bool(_MONTH_BEFORE.search(text, max(0, start - 12), start))
 
 
 def _spans(
@@ -479,7 +582,11 @@ def _spans(
         pos = begin
         while (match := pattern.search(text, pos)) and match.start() < end:
             span = (match.start(), match.end())
-            if span[1] <= end and not any(_overlap(span, c) for c in claimed):
+            if (
+                span[1] <= end
+                and not _joins(text, span, item.token)
+                and not any(_overlap(span, c) for c in claimed)
+            ):
                 found.add(span)
             pos = match.start() + 1
     return sorted(found)
@@ -527,7 +634,12 @@ def place(options: Sequence[Sequence[Span]]) -> list[Span | None]:
 
 
 def _walk(parts: list[Part], text: str, path: Path) -> list[Finding]:
-    """Return a finding for each item of `parts` that is not in `text`.
+    """Return a finding for each item of `parts` that is not in `text`."""
+    return walk(parts, text, path)[0]
+
+
+def walk(parts: list[Part], text: str, path: Path) -> tuple[list[Finding], list[Span]]:
+    """Return the findings of `parts` in the normalized `text`, and the claimed spans.
 
     Each item claims its own span of the text, and no two items share a span or
     a part of one. First the walk goes through the parts in order. A section
@@ -582,26 +694,26 @@ def _walk(parts: list[Part], text: str, path: Path) -> list[Finding]:
                     item.text,
                 )
             )
-    return findings
+    return findings, claimed
 
 
 def _claim_heading(part: Part, text: str, cursor: int, claimed: list[Span]) -> int:
-    """Claim the heading line of `part` when it comes before the part's first item.
+    """Claim each heading line of `part` that comes before the part's first item.
 
-    Return the new cursor: the end of the heading, or `cursor` when the heading is
-    not claimed. A heading that is not there gives no finding.
+    Return the new cursor: the end of the last claimed heading, or `cursor` when
+    no heading is claimed. A heading that is not there gives no finding.
     """
-    if part.heading is None:
-        return cursor
-    heading = _spans(part.heading, text, cursor, len(text), claimed)
-    if not heading:
-        return cursor
-    if part.ordered:
-        first = _spans(part.ordered[0], text, cursor, len(text), claimed)
-        if first and first[0][0] < heading[0][0]:
-            return cursor
-    claimed.append(heading[0])
-    return heading[0][1]
+    for item in part.headings:
+        heading = _spans(item, text, cursor, len(text), claimed)
+        if not heading:
+            continue
+        if part.ordered:
+            first = _spans(part.ordered[0], text, cursor, len(text), claimed)
+            if first and first[0][0] < heading[0][0]:
+                continue
+        claimed.append(heading[0])
+        cursor = heading[0][1]
+    return cursor
 
 
 def _order_finding(

@@ -16,13 +16,17 @@ from pypdf import PdfWriter
 from darzi.render.word import letter_docx, resume_docx, section_order
 from darzi.runs import roundtrip
 from darzi.runs.roundtrip import (
+    MAX_OPTIONS,
     check_letter,
     check_resume,
+    extract_text,
     letter_paragraphs,
     normalize,
     place,
+    resume_parts,
     template_date,
     template_link,
+    walk,
 )
 
 from .pdf_fakes import pdf_bytes
@@ -458,6 +462,24 @@ YEAR = [
     _put("workExperience.0.years", "2021"),
     _put(BULLET, "Ran 20 user interviews in 2021."),
 ]
+
+
+def _skill(approved: str, shown: str | None) -> tuple[list[Change], list[Change], str]:
+    """Return a case: a first skill `approved`, shown as `shown` (None: absent)."""
+
+    def show(resume: Resume) -> None:
+        skills = resume["additional"]["technicalSkills"]
+        if shown is None:
+            skills.pop(0)
+        else:
+            skills[0] = shown
+
+    def add(resume: Resume) -> None:
+        resume["additional"]["technicalSkills"].insert(0, approved)
+
+    return [add], [show], "additional.technicalSkills[0]"
+
+
 GO_SKILL: list[Change] = [
     lambda r: r["additional"]["technicalSkills"].insert(0, "Go"),
     lambda r: r["sectionMeta"][-1].update(displayName="Go-To Skills"),
@@ -556,6 +578,62 @@ WRONG: dict[str, tuple[list[Change], list[Change], str]] = {
         [_put("personalProjects.0.years", "Dec 2019 - Jan 2020")],
         "personalProjects[0].years",
     ),
+    # A sign that joins more text to the approved value makes a longer token.
+    "one-letter skill shown with a plus sign": _skill("C", "C+"),
+    "one-letter skill shown with a hash": _skill("C", "C#"),
+    "one-letter skill shown with two plus signs": _skill("C", "C++"),
+    "skill with a leading dot shown with letters in front": _skill(".NET", "ASP.NET"),
+    "skill with slashes shown with one more part": _skill("CI/CD", "CI/CD/CT"),
+    "short skill shown with a hyphen and more letters": _skill("Go", "Go-kit"),
+    "skill with two plus signs not shown": _skill("C++", None),
+    "skill with a leading dot not shown": _skill(".NET", None),
+    "company shown with a hyphen and a second word": (
+        [],
+        [_put("workExperience.0.company", "Acme-Widgets")],
+        "workExperience[0].company",
+    ),
+    "year shown with a month in front": (
+        [_put("workExperience.0.years", "2021")],
+        [_put("workExperience.0.years", "Mar 2021")],
+        "workExperience[0].years",
+    ),
+    "year shown with a slash and two more digits": (
+        [_put("workExperience.0.years", "2021")],
+        [_put("workExperience.0.years", "2021/22")],
+        "workExperience[0].years",
+    ),
+    "month shown as the start of a range with a range word": (
+        [_put("personalProjects.0.years", "Jan 2020")],
+        [_put("personalProjects.0.years", "Jan 2020 to Dec 2020")],
+        "personalProjects[0].years",
+    ),
+    "month shown as the end of a range with a range word": (
+        [_put("personalProjects.0.years", "Jan 2020")],
+        [_put("personalProjects.0.years", "Dec 2019 until Jan 2020")],
+        "personalProjects[0].years",
+    ),
+    "email with a part and a plus sign in front": (
+        [],
+        [_put("personalInfo.email", "x+" + "test.person@example.com")],
+        "personalInfo.email",
+    ),
+    "link with a query after it": (
+        [],
+        [_put("personalInfo.github", "github.com/test-person?tab=repos")],
+        "personalInfo.github",
+    ),
+    "phone with a plus sign and a country code in front": (
+        [],
+        # Two strings, so that the privacy gate sees no other phone number.
+        [_put("personalInfo.phone", "+1 " + "555-0100")],
+        "personalInfo.phone",
+    ),
+    # The Word file has the heading "Certifications and training".
+    "certification that is a word of its heading": (
+        [_put("additional.certificationsTraining", ["Training", "Usability Analyst"])],
+        [_put("additional.certificationsTraining", ["Usability Analyst"])],
+        "additional.certificationsTraining[0]",
+    ),
 }
 
 
@@ -604,6 +682,43 @@ RIGHT: dict[str, tuple[list[Change], list[Change]]] = {
         [],
         [_put("personalInfo.github", "https://github.com/test-person")],
     ),
+    "link with www in front": (
+        [],
+        [_put("personalInfo.github", "www.github.com/test-person")],
+    ),
+    "skills with signs shown exactly": (
+        [
+            _put(
+                "additional.technicalSkills", ["C++", "C#", ".NET", "CI/CD", "R&D", "C"]
+            )
+        ],
+        [],
+    ),
+    "two skills shown with a slash and spaces": (
+        [_put("additional.technicalSkills", ["Figma", "C", "C++"])],
+        [_put("additional.technicalSkills", ["Figma", "C / C++"])],
+    ),
+    "company before a sentence dot": ([], [_put("workExperience.0.company", "Acme.")]),
+    "company in brackets": ([], [_put("workExperience.0.company", "(Acme)")]),
+    "company in quotes": ([], [_put("workExperience.0.company", "'Acme'")]),
+    "company before a comma": ([], [_put("workExperience.0.company", "Acme,")]),
+    # A heading must be a full line: the word of the next heading in a condensed
+    # entry is not that heading.
+    "company holds the word of the next heading": (
+        [_put("workExperience.2.company", "Initech Projects")],
+        [],
+    ),
+    "education text starts with the word of the next heading": (
+        [_put("education.0.description", "Skills workshop for new staff.")],
+        [],
+    ),
+    "company holds the word of the next heading at a line end": (
+        [
+            _put("workExperience.2.company", "Initech Projects"),
+            _put("workExperience.2.years", ""),
+        ],
+        [],
+    ),
 }
 
 
@@ -648,6 +763,59 @@ def test_place() -> None:
     assert place(options) == [(20, 30), (5, 8), (40, 50)]
     assert place([[(0, 5)], [(1, 3)]]) == [(0, 5), None]
     assert place([]) == []
+
+
+def test_place_tries_only_the_first_matches_of_an_item() -> None:
+    # The first MAX_OPTIONS matches of the first item overlap the only match of
+    # the second item. The free match after them is not tried: the result is a
+    # finding (a correct file can fail), never a pass and never a long search.
+    many = [(i, i + 1) for i in range(MAX_OPTIONS)] + [(500, 501)]
+    assert place([many, [(0, 100)]]) == [None, (0, 100)]
+    assert place([many[-MAX_OPTIONS:], [(0, 100)]]) == [(500, 501), (0, 100)]
+
+
+# A word that ends in a combining mark (Devanagari), and the letters of a
+# longer word of the same script.
+MARK_WORD = "\u0939\u093f\u0902\u0926\u0940"
+MORE_LETTERS = "\u092d\u093e\u0937\u093e"
+
+
+@pytest.mark.parametrize(
+    ("approved", "shown"),
+    [
+        (MARK_WORD, MARK_WORD + MORE_LETTERS),
+        # The approved word stops before the last mark of the shown word.
+        (MARK_WORD[:-1], MARK_WORD),
+        ("Go", "Go\u0332od"),
+    ],
+)
+def test_a_combining_mark_is_a_part_of_its_word(
+    approved: str, shown: str, tmp_path: Path
+) -> None:
+    # The minimal PDF has no font for these characters, so only a Word file.
+    resume = rich()
+    resume["additional"]["languages"] = [approved]
+    assert check_resume(resume, write("docx", resume, tmp_path, "ok")) == []
+    wrong = copy.deepcopy(resume)
+    wrong["additional"]["languages"] = [shown]
+    findings = check_resume(resume, write("docx", wrong, tmp_path))
+    assert "additional.languages[0]" in locations(findings)
+
+
+def test_each_line_of_the_word_file_is_claimed(tmp_path: Path) -> None:
+    # Each text of the Word file is an approved item or a claimed heading line;
+    # only the separators stay free. A new fixed line in the Word writer that
+    # the check does not claim makes this test fail.
+    resume = rich()
+    del resume["personalInfo"]["title"]  # The check does not test this field.
+    path = write("docx", resume, tmp_path)
+    text = normalize(extract_text(path))
+    findings, claimed = walk(resume_parts(resume, "docx"), text, path)
+    assert findings == []
+    rest = list(text)
+    for start, end in claimed:
+        rest[start:end] = [" "] * (end - start)
+    assert set(rest) <= set(" ,|\n"), "".join(rest)
 
 
 def test_only_the_template_tags_are_removed_from_a_pdf_bullet(

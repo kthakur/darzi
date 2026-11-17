@@ -51,6 +51,13 @@ HEADING_SCALE = 1.05
 NAME_SCALE = 1.5
 # The subheading above the condensed roles, as in earlier-experience.tsx.
 EARLIER_EXPERIENCE = "Earlier experience"
+# The lists of the additional section after the skills, each with its heading.
+# The round-trip check claims these heading lines.
+ADDITIONAL_HEADINGS: tuple[tuple[str, str], ...] = (
+    ("languages", "Languages"),
+    ("certificationsTraining", "Certifications and training"),
+    ("awards", "Awards"),
+)
 
 # The cover letter has one fixed layout, because it has no page limit.
 LETTER_BODY_PT = 10.5
@@ -229,11 +236,7 @@ def _additional(
     if skills:
         _heading(doc, label, layout)
         doc.add_paragraph(", ".join(str(s) for s in skills))
-    for extra, title in (
-        ("languages", "Languages"),
-        ("certificationsTraining", "Certifications and training"),
-        ("awards", "Awards"),
-    ):
+    for extra, title in ADDITIONAL_HEADINGS:
         if additional.get(extra):
             _heading(doc, title, layout)
             doc.add_paragraph(", ".join(str(s) for s in additional[extra]))
