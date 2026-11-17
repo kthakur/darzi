@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from darzi import __version__
-from darzi.facts.check import BASE, BASE_MAP, CHECK_REPORT, check, load_run
+from darzi.facts.check import (
+    BASE,
+    BASE_MAP,
+    CHECK_REPORT,
+    check,
+    load_run,
+    require_public_keys,
+    require_selection_keys,
+)
 from darzi.facts.check_meta import load_open_questions
 from darzi.facts.export import export
 from darzi.facts.public import privacy_findings, public_copy, query
@@ -28,6 +36,7 @@ from darzi.facts.repo import (
 from darzi.facts.rules import validate_rules
 from darzi.facts.selection import check_selection, load_selection
 from darzi.facts.validate import Finding, validate
+from darzi.paths import is_file
 from darzi.runs.approve import safe
 from darzi.runs.runs import new_run
 from darzi.runs.status import RunRow, list_runs
@@ -144,7 +153,7 @@ def _validate(repo_arg: Path | None, as_json: bool) -> int:
 
 
 def _check(run: Path, repo_arg: Path | None, as_json: bool) -> int:
-    if run.is_file():
+    if is_file(run):
         return _check_selection(run, repo_arg, as_json)
     # Invalid input gives exit code 2 and writes no check.json. This includes a
     # rules.yaml or base.map.json that lacks a key that the rules read.
@@ -173,6 +182,7 @@ def _check_selection(path: Path, repo_arg: Path | None, as_json: bool) -> int:
         selection = load_selection(path)
         master = load_master(repo)
         rules = load_rules(repo)
+        require_selection_keys(rules)
         questions = load_open_questions(repo)
     except InputError as exc:
         print(f"facts check: {exc}", file=sys.stderr)
@@ -186,12 +196,14 @@ def _check_selection(path: Path, repo_arg: Path | None, as_json: bool) -> int:
 
 
 def _export(path: Path, run: Path, repo_arg: Path | None, as_json: bool) -> int:
-    # Invalid input (a file is missing or cannot be read) gives exit code 2.
+    # Invalid input (a file is missing or cannot be read, or rules.yaml lacks a
+    # key that the export reads) gives exit code 2.
     try:
         repo = find_repo(repo_arg)
         selection = load_selection(path)
         master = load_master(repo)
         rules = load_rules(repo)
+        require_public_keys(rules)
         questions = load_open_questions(repo)
     except InputError as exc:
         print(f"facts export: {exc}", file=sys.stderr)
@@ -226,10 +238,12 @@ def _export(path: Path, run: Path, repo_arg: Path | None, as_json: bool) -> int:
 def _public_data(repo_arg: Path | None) -> tuple[dict[str, Any], list[Finding]]:
     """Return the public copy and the private data that the scan finds in it.
 
-    Raises InputError when a file is missing or cannot be read.
+    Raises InputError when a file is missing or cannot be read, or when
+    rules.yaml lacks a key that the public copy or the scan reads.
     """
     repo = find_repo(repo_arg)
     rules = load_rules(repo)
+    require_public_keys(rules)
     data = public_copy(load_master(repo), rules)
     return data, privacy_findings(data, rules)
 
@@ -416,8 +430,13 @@ def _line(text: str) -> str:
 
 
 def _cell(value: str | None) -> str:
+    """Return the table cell of `value`: "-" when absent, '""' when blank."""
     if value is None:
         return "-"
+    if not value.strip():
+        # An empty or blank value would leave the cell empty, and the table
+        # would look as if a column is missing.
+        return '""'
     return _line(value)
 
 

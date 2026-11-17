@@ -151,14 +151,35 @@ def test_a_facts_toml_that_cannot_be_read_is_refused(
 def test_a_facts_toml_that_cannot_be_tested_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # is_file() too raises an OSError, for example for a folder that the user
-    # cannot open.
+    # The file test (stat()) too raises an OSError, for example for a folder that
+    # the user cannot open.
     def fail(*args: Any, **kwargs: Any) -> bool:
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "is_file", fail)
+    monkeypatch.setattr(Path, "stat", fail)
     with pytest.raises(InputError, match="cannot be read: Permission denied"):
         load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[owner]\nage = 1" + "0" * 5000 + "\n",
+        "x = " + "[" * 5000 + "]" * 5000 + "\n",
+    ],
+    ids=["long-integer", "deep-list"],
+)
+def test_a_facts_toml_value_that_toml_cannot_read_is_refused(
+    tmp_path: Path, text: str
+) -> None:
+    # Issue 13: tomllib raises a plain ValueError or RecursionError here, not a
+    # TOMLDecodeError.
+    (tmp_path / FACTS_TOML).write_text(text, encoding="utf-8")
+    with pytest.raises(InputError) as exc:
+        load_config(tmp_path)
+    message = str(exc.value)
+    assert message.startswith(str(tmp_path / FACTS_TOML))
+    assert "\n" not in message and len(message) < 300
 
 
 def test_a_folder_named_facts_toml_gives_the_owner(tmp_path: Path) -> None:
