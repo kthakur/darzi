@@ -20,6 +20,7 @@ from darzi.facts.check import PUBLIC_KEYS, PUBLIC_NESTED_KEYS, SELECTION_KEYS
 from darzi.facts.repo import InputError, read_yaml
 
 from .conftest import DATA
+from .signing_root import approve, setup_signing
 
 NOT_ROOT = pytest.mark.skipif(
     not hasattr(os, "geteuid") or os.geteuid() == 0,
@@ -176,6 +177,8 @@ def test_a_key_that_the_command_does_not_read_is_not_tested(
 def test_export_with_complete_rules_writes_base_json(
     root: Path, tmp_path: Path
 ) -> None:
+    setup_signing(root, tmp_path / "keys")
+    assert approve(root, root / SELECTION) == 0
     assert _run("export", root, tmp_path) == 0
     assert (tmp_path / "run" / "base.json").is_file()
 

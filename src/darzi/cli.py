@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from darzi import __version__
+from darzi.config import Approval, load_config
 from darzi.facts.check import (
     BASE,
     BASE_MAP,
@@ -34,11 +35,27 @@ from darzi.facts.repo import (
     load_selections,
 )
 from darzi.facts.rules import validate_rules
-from darzi.facts.selection import check_selection, load_selection
+from darzi.facts.selection import (
+    check_selection,
+    is_approved,
+    load_selection,
+    selection_hash,
+)
 from darzi.facts.validate import Finding, validate
 from darzi.paths import is_file
-from darzi.runs.approve import safe
-from darzi.runs.runs import new_run
+from darzi.runs.approve import (
+    Ask,
+    confirm,
+    record_and_sign,
+    require_terminal,
+    run_text,
+    safe,
+    selection_text,
+    sign_problem,
+    unreviewable,
+)
+from darzi.runs.runs import APPROVAL, content_hash, new_run
+from darzi.runs.signing import run_target, selection_record, selection_target
 from darzi.runs.status import RunRow, list_runs
 from darzi.schemas import MASTER, RULES, SELECTION, load_schema
 
@@ -46,7 +63,6 @@ JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "approve": "W-5",
     "render": "W-6",
     "finalize": "W-8",
     "answers": "W-9",
@@ -102,6 +118,14 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--job", type=Path, help="job post file, or - for stdin")
     source.add_argument("--url", help="job post link (not built yet: W-10)")
     sub.add_parser("status", parents=[common], help="list all runs")
+    approve_cmd = sub.add_parser(
+        "approve",
+        parents=[common],
+        help="the owner approves and signs a selection or a run",
+    )
+    approve_cmd.add_argument(
+        "target", type=Path, help="selections/<type>.yaml, or a run folder"
+    )
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -131,6 +155,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _new_run(args.company, args.role, args.job, args.repo, args.json)
     if command == "status":
         return _status(args.repo, args.json)
+    if command == "approve":
+        return _approve(args.target, args.repo)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -205,6 +231,7 @@ def _export(path: Path, run: Path, repo_arg: Path | None, as_json: bool) -> int:
         rules = load_rules(repo)
         require_public_keys(rules)
         questions = load_open_questions(repo)
+        settings = load_config(repo).approval
     except InputError as exc:
         print(f"facts export: {exc}", file=sys.stderr)
         return 2
@@ -214,7 +241,18 @@ def _export(path: Path, run: Path, repo_arg: Path | None, as_json: bool) -> int:
     if findings:
         _print(_report_data("export", path, findings), findings, as_json, str(path))
         return 1
-    # Work item W-5 adds the signed approval test here (docs/SPEC.md section 7).
+    # Only a signed approval of this content permits the export. The old
+    # approval block in the YAML has no effect (docs/SPEC.md section 7).
+    verdict = is_approved(repo, settings, path, selection)
+    if not verdict.approved:
+        print(
+            _line(
+                f"facts export: {path} is not approved: {verdict.reason}. "
+                f"The owner runs: facts approve {path}"
+            ),
+            file=sys.stderr,
+        )
+        return 1
     try:
         rel = str(path.resolve().relative_to(repo))
     except ValueError:
@@ -295,6 +333,127 @@ def _query(repo_arg: Path | None, tags: str, text: str | None, as_json: bool) ->
         print(f"{hit['id']}  [{hit['entry']}] {tags}{mark}\n    {hit['text']}")
     print(f"{len(hits)} bullets.")
     return 0
+
+
+def _ask(prompt: str) -> str:
+    return input(prompt)
+
+
+def _approve(target: Path, repo_arg: Path | None) -> int:
+    # The terminal test comes first, before any file is read.
+    try:
+        require_terminal(sys.stdin.isatty())
+    except InputError as exc:
+        print(f"facts approve: {exc}", file=sys.stderr)
+        return 1
+    return approve_steps(target, repo_arg, _ask, _today())
+
+
+def approve_steps(target: Path, repo_arg: Path | None, ask: Ask, day: dt.date) -> int:
+    """Run the steps of `facts approve` after the terminal test; return the exit code.
+
+    Run the checks, show the review text, ask with `ask`, and sign. The
+    signature uses the real settings, the real `allowed_signers` and the key of
+    `facts.toml`; this function has no other way to approve.
+    """
+    # Each refusal gives exit code 1, as in the source. A value of the wrong
+    # type in facts.toml is invalid input: exit code 2.
+    try:
+        repo = find_repo(repo_arg)
+    except InputError as exc:
+        print(f"facts approve: {exc}", file=sys.stderr)
+        return 1
+    try:
+        settings = load_config(repo).approval
+    except InputError as exc:
+        print(f"facts approve: {exc}", file=sys.stderr)
+        return 2
+    try:
+        problem = sign_problem(repo, settings)
+        if problem:
+            raise InputError(f"cannot sign: {problem}. Fix facts.toml first.")
+        if is_file(target):
+            return _approve_selection(target, repo, settings, ask, day)
+        return _approve_run(target, repo, settings, ask, day)
+    except InputError as exc:
+        print(f"facts approve: {_line(str(exc))}", file=sys.stderr)
+        return 1
+
+
+def _approve_selection(
+    path: Path, repo: Path, settings: Approval, ask: Ask, day: dt.date
+) -> int:
+    selection = load_selection(path)
+    master = load_master(repo)
+    rules = load_rules(repo)
+    require_selection_keys(rules)
+    findings = check_selection(
+        selection, load_schema(SELECTION), master, rules, load_open_questions(repo)
+    )
+    if any(f.severity == "error" for f in findings):
+        _print(_report_data("approve", path, findings), findings, False, str(path))
+        raise InputError("the selection has errors. Correct them, then approve.")
+    if is_approved(repo, settings, path, selection).approved:
+        print(f"{_line(str(path))}: this content has a valid approval already.")
+        return 0
+    print(selection_text(selection, master))
+    if not confirm(ask, _line(str(path))):
+        print("Not approved. No file was written.")
+        return 1
+    digest = selection_hash(selection)
+    verdict = record_and_sign(
+        repo,
+        settings,
+        "selection",
+        selection_target(path),
+        selection_record(path),
+        digest,
+        day,
+    )
+    _approved(path, day, digest, verdict.fingerprint)
+    return 0
+
+
+def _approve_run(
+    run_dir: Path, repo: Path, settings: Approval, ask: Ask, day: dt.date
+) -> int:
+    run = load_run(run_dir)
+    findings = check(
+        run, load_rules(repo), load_master(repo), load_open_questions(repo)
+    )
+    report = _report_data("check", run_dir, findings)
+    (run_dir / CHECK_REPORT).write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+    if report["errors"]:
+        _print(report, findings, False, str(run_dir))
+        raise InputError("facts check found errors. Correct them, then approve.")
+    hidden = unreviewable(run.tailored)
+    if hidden:
+        raise InputError(
+            "the review cannot show these parts of tailored.json: "
+            + ", ".join(hidden)
+            + ". Remove them, then approve."
+        )
+    print(run_text(run))
+    print(f"\nfacts check: 0 errors, {report['warnings']} warnings.")
+    if not confirm(ask, f"the resume and the cover letter in {_line(str(run_dir))}"):
+        print("Not approved. No file was written.")
+        return 1
+    # The hash comes from the same loaded data that the review showed.
+    digest = content_hash(run.tailored, run.letter)
+    verdict = record_and_sign(
+        repo, settings, "run", run_target(run_dir), run_dir / APPROVAL, digest, day
+    )
+    _approved(run_dir, day, digest, verdict.fingerprint)
+    return 0
+
+
+def _approved(target: Path, day: dt.date, digest: str, key: str | None) -> None:
+    print(
+        f"Approved {_line(str(target))} on {day.isoformat()} "
+        f"(sha256 {digest[:12]}, key {key})."
+    )
 
 
 def _today() -> dt.date:
