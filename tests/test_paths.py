@@ -99,4 +99,4 @@ def test_src_uses_the_helpers() -> None:
         for number, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1)
         if call.search(line)
     ]
-    assert found == ["runs/runs.py:56: if run.exists():"]
+    assert found == ["runs/runs.py:66: if run.exists():"]

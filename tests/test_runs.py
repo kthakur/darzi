@@ -6,7 +6,6 @@ import copy
 import datetime as dt
 import io
 import json
-import socket
 from pathlib import Path
 from typing import Any
 
@@ -679,70 +678,7 @@ def test_cli_stdin_read_failure_has_its_own_message(
     assert not (root / APPLICATIONS).exists()
 
 
-# facts new-run --url: not built before work item W-10
-
-
-@pytest.fixture
-def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Make each socket connect and each name lookup fail the test."""
-    calls: list[str] = []
-
-    def refuse(name: str) -> Any:
-        def call(*args: Any, **kwargs: Any) -> Any:
-            calls.append(name)
-            raise AssertionError(f"network call: {name}")
-
-        return call
-
-    monkeypatch.setattr(socket.socket, "connect", refuse("connect"))
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse("connect_ex"))
-    monkeypatch.setattr(socket, "create_connection", refuse("create_connection"))
-    monkeypatch.setattr(socket, "getaddrinfo", refuse("getaddrinfo"))
-    return calls
-
-
-def test_no_network_fixture_catches_a_connect(no_network: list[str]) -> None:
-    with pytest.raises(AssertionError):
-        socket.create_connection(("jobs.example.com", 443))
-    assert no_network == ["create_connection"]
-
-
-def test_cli_url_is_not_built_yet(
-    root: Path,
-    today: dt.date,
-    no_network: list[str],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    err = _refused(root, capsys, "--url", "https://jobs.example.com/acme/designer")
-    assert err == (
-        "facts new-run: --url is not built yet. It comes in work item W-10. "
-        "Save the job post to a file and pass --job FILE, "
-        "or paste it with --job -.\n"
-    )
-    assert no_network == []
-    assert sorted(p.name for p in root.iterdir()) == ["master.yaml"]
-
-
-def test_cli_empty_url_is_not_built_yet(
-    root: Path,
-    today: dt.date,
-    no_network: list[str],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    err = _refused(root, capsys, "--url", "")
-    assert err.startswith("facts new-run: --url is not built yet.")
-    assert "work item W-10" in err
-    assert no_network == []
-    assert sorted(p.name for p in root.iterdir()) == ["master.yaml"]
-
-
-def test_cli_url_with_no_data_root_makes_no_folder(
-    tmp_path: Path, no_network: list[str], capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert _new_run(tmp_path, "--url", "https://jobs.example.com/x") == 2
-    assert "work item W-10" in capsys.readouterr().err
-    assert list(tmp_path.iterdir()) == []
-    assert no_network == []
+# facts new-run --url: see tests/test_fetch.py
 
 
 def test_cli_job_and_url_together_exit_2(
