@@ -13,7 +13,7 @@ CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # accents. Everything else (format, separators, private use, unassigned) is shown as
 # "?". Some allowed-category characters still render as blank; they are listed too.
 VISIBLE = ("L", "N", "P", "S")
-BLANK_LOOKING = {"ᅟ", "ᅠ", "ㅤ", "ﾠ", "⠀"}
+BLANK_LOOKING = {"\u115f", "\u1160", "\u3164", "\uffa0", "\u2800"}
 
 
 def _shown(c: str) -> bool:

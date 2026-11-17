@@ -195,9 +195,9 @@ def test_hash_is_sha256_of_canonical_json() -> None:
 
 
 def test_dates() -> None:
-    assert fmt_years({"start": "2015-02", "end": "2017-10"}) == "Feb 2015 - Oct 2017"
-    assert fmt_years({"start": "2025-04", "end": "2025-04"}) == "Apr 2025"
-    assert fmt_years({"start": "2023-06", "end": "present"}) == "Jun 2023 - Present"
+    assert fmt_years({"start": "2012-03", "end": "2014-11"}) == "Mar 2012 - Nov 2014"
+    assert fmt_years({"start": "2019-08", "end": "2019-08"}) == "Aug 2019"
+    assert fmt_years({"start": "2021-01", "end": "present"}) == "Jan 2021 - Present"
     assert fmt_years({"start": 2016, "end": 2017}) == "2016 - 2017"
     assert fmt_years({"start": 2024, "end": ""}) == "2024"
     assert fmt_date(None) == ""

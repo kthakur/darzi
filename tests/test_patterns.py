@@ -40,8 +40,8 @@ def test_find_terms_reports_text_and_order() -> None:
 
 
 def test_find_terms_keeps_the_longer_overlap() -> None:
-    found = find_terms("Built RAG systems", ["RAG", "RAG systems"])
-    assert [m.text for m in found] == ["RAG systems"]
+    found = find_terms("Built Zorblex systems", ["Zorblex", "Zorblex systems"])
+    assert [m.text for m in found] == ["Zorblex systems"]
 
 
 def test_find_regex() -> None:

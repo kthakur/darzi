@@ -217,15 +217,25 @@ def test_public_contact_matches_master(
 def test_employer_of_record_covers_every_through_entry(
     rules: dict[str, Any], master: dict[str, Any]
 ) -> None:
+    # The synthetic master names the agency only in rules.yaml. Put it into the
+    # org of the role in a copy, so that the loop below has an entry to test.
+    master = copy.deepcopy(master)
+    (globex,) = [e for e in master["roles"] if e["id"] == "globex"]
+    globex["org"] = "Globex Corporation through Initech Staffing"
     required = rules["employer_of_record"]["required_any"]
     ids = {e["id"] for e in master["roles"] + master["projects"]}
     assert set(required) <= ids
+    tested: list[str] = []
     for entry in master["roles"]:
         m = re.search(r"\bthrough (\w+)", entry["org"])
         if not m:
             continue
         assert entry["id"] in required, entry["id"]
-        assert any(w.split()[0] == m.group(1) for w in required[entry["id"]])
+        assert any(w.split()[0] == m.group(1) for w in required[entry["id"]]), entry[
+            "id"
+        ]
+        tested.append(entry["id"])
+    assert tested == ["globex"]
 
 
 def test_never_as_company_ids_exist(

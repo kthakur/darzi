@@ -32,7 +32,7 @@ def fmt_date(value: Any) -> str:
 
 
 def fmt_years(entry: dict[str, Any]) -> str:
-    """Format the date range of an entry ('Feb 2015 - Oct 2017', 'Apr 2025')."""
+    """Format the date range of an entry ('Mar 2012 - Nov 2014', 'Aug 2019')."""
     start, end = fmt_date(entry.get("start")), fmt_date(entry.get("end"))
     if start and end and start != end:
         return f"{start} - {end}"
