@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -39,6 +43,36 @@ def test_synthetic_facts_toml_has_each_section_and_no_real_path() -> None:
     for host in data["form"]["blocked_hosts"]:
         assert host == "example.com" or host.endswith(".example.com")
     assert data["fit"] == {"green": 0.7, "yellow": 0.4}
+
+
+def _values(value: Any) -> Iterator[str]:
+    """Yield each text value in a parsed TOML value, at each depth."""
+    if isinstance(value, dict):
+        for item in value.values():  # pyright: ignore[reportUnknownVariableType]
+            yield from _values(item)
+    elif isinstance(value, list):
+        for item in value:  # pyright: ignore[reportUnknownVariableType]
+            yield from _values(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def test_synthetic_facts_toml_points_to_no_real_place() -> None:
+    # A later test that uses these values must not reach the owner's renderer,
+    # key or Resume Matcher install.
+    with (DATA / FACTS_TOML).open("rb") as f:
+        data = tomllib.load(f)
+    texts = list(_values(data))
+    assert "Test Person" in texts
+    for text in texts:
+        for word in ("localhost", "127.0.0.1", "::1", "~", "/Users/", "/home/"):
+            assert word not in text, f"{word!r} in {text!r}"
+    rm = data["render"]["resume_matcher"]
+    for url in (rm["frontend_url"], rm["backend_url"]):
+        host = urlsplit(url).hostname
+        assert host is not None and host.endswith(".invalid")
+    assert not Path(data["approval"]["key"]).exists()
+    assert not Path(rm["path"]).exists()
 
 
 def test_no_facts_toml_gives_the_owner(tmp_path: Path) -> None:
@@ -94,6 +128,21 @@ def test_name_that_is_not_a_text_is_refused(tmp_path: Path, value: str) -> None:
         load_config(_write(tmp_path, f"[owner]\nname = {value}\n"))
 
 
+def test_a_facts_toml_that_cannot_be_read_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write(tmp_path, "[owner]\nname = 'Test Person'\n")
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", fail)
+    with pytest.raises(InputError) as exc:
+        load_config(tmp_path)
+    path = tmp_path / FACTS_TOML
+    assert str(exc.value) == f"{path} cannot be read: Permission denied."
+
+
 def test_a_folder_named_facts_toml_gives_the_owner(tmp_path: Path) -> None:
     (tmp_path / FACTS_TOML).mkdir()
     assert load_config(tmp_path).owner_name == "the owner"
@@ -111,3 +160,63 @@ def test_config_reads_no_environment_variable(
     text = source.read_text(encoding="utf-8")
     for word in ("import os", "from os", "os.environ", "getenv", "environb"):
         assert word not in text
+
+
+class _NoEnvironment(dict[str, str]):
+    """An environment mapping that records each read and fails the test."""
+
+    def __init__(self, reads: list[str]) -> None:
+        super().__init__()
+        self.reads = reads
+
+    def _read(self, name: str) -> Any:
+        self.reads.append(name)
+        pytest.fail(f"load_config read the environment ({name})")
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._read("__getitem__")
+
+    def __contains__(self, key: Any) -> bool:
+        return self._read("__contains__")
+
+    def __iter__(self) -> Any:
+        return self._read("__iter__")
+
+    def __len__(self) -> int:
+        return self._read("__len__")
+
+    def get(self, *args: Any, **kwargs: Any) -> Any:
+        return self._read("get")
+
+    def keys(self) -> Any:
+        return self._read("keys")
+
+    def items(self) -> Any:
+        return self._read("items")
+
+    def values(self) -> Any:
+        return self._read("values")
+
+    def copy(self) -> Any:
+        return self._read("copy")
+
+
+def test_config_does_not_read_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each read of os.environ or os.environb fails the test. The context gives
+    # back the true environment before pytest uses it again.
+    reads: list[str] = []
+    with monkeypatch.context() as m:
+        m.setattr(os, "environ", _NoEnvironment(reads))
+        m.setattr(os, "environb", _NoEnvironment(reads))
+        synthetic = load_config(DATA)
+        empty = load_config(tmp_path)
+        _write(tmp_path, "[owner]\nname = 'Test Person'\n")
+        written = load_config(tmp_path)
+    assert reads == []
+    assert synthetic == written == Config(owner_name="Test Person")
+    assert empty == Config()
+    source = Path(__file__).resolve().parents[1] / "src" / "darzi" / "config.py"
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert not any(line.startswith(("import os", "from os")) for line in lines)

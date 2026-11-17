@@ -307,16 +307,16 @@ def _read_job(job: Path) -> str:
     text is not UTF-8.
     """
     if str(job) == "-":
+        # Decode the bytes as UTF-8, independent of the locale. The line ends
+        # stay as they are, as in the source on macOS and Linux.
         try:
-            text = sys.stdin.buffer.read().decode("utf-8")
+            return sys.stdin.buffer.read().decode("utf-8")
         except UnicodeDecodeError as exc:
             raise InputError(
                 "The text from stdin is not UTF-8 text. "
                 "Paste the job post as plain text, or save it as a UTF-8 file "
                 "and pass --job FILE."
             ) from exc
-        # The same line ends as a file that is read in text mode.
-        return text.replace("\r\n", "\n").replace("\r", "\n")
     try:
         return job.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -379,11 +379,19 @@ def _status(repo_arg: Path | None, as_json: bool) -> int:
     return 1 if report["errors"] else 0
 
 
+def _line(text: str) -> str:
+    """Return `text` as one line of visible characters for the terminal.
+
+    `safe()` keeps line ends and tabs. A line end or a tab would break the table
+    or start a false line, so it shows as "?" too.
+    """
+    return safe(text).replace("\n", "?").replace("\t", "?")
+
+
 def _cell(value: str | None) -> str:
     if value is None:
         return "-"
-    # A line end or a tab would break the table: show it as "?".
-    return safe(value.replace("\n", "?").replace("\t", "?"))
+    return _line(value)
 
 
 def _print_runs(rows: list[RunRow], findings: list[Finding]) -> None:
@@ -398,7 +406,8 @@ def _print_runs(rows: list[RunRow], findings: list[Finding]) -> None:
             cells = zip(line, widths, strict=True)
             print(safe("  ".join(c.ljust(w) for c, w in cells).rstrip()))
     for f in findings:
-        print(safe(f"{f.severity} {f.rule} {f.location}: {f.message}"))
+        # Exactly one line for each finding. A folder name can hold a line end.
+        print(f"{f.severity} {f.rule} {_line(f.location)}: {_line(f.message)}")
     print(safe(f"{len(rows)} runs."))
 
 

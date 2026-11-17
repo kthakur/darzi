@@ -77,11 +77,20 @@ def content_hash(tailored: dict[str, Any], letter: str | None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _place(exc: yaml.YAMLError) -> str:
+    """Return " (line N, column M)" for a YAML error that has a place, else ""."""
+    mark: Any = getattr(exc, "problem_mark", None)
+    if mark is None:
+        return ""
+    return f" (line {mark.line + 1}, column {mark.column + 1})"
+
+
 def load_meta(run_dir: Path) -> dict[str, Any]:
     """Return the parsed `run.yaml` of `run_dir`. An empty file gives {}.
 
     Raises InputError when the file is missing, cannot be read, is not valid
-    YAML, or is not a mapping.
+    YAML, has a value that YAML cannot read, or is not a mapping. Each message is
+    one line.
     """
     path = run_dir / RUN_YAML
     if not path.is_file():
@@ -95,7 +104,18 @@ def load_meta(run_dir: Path) -> dict[str, Any]:
     try:
         meta: Any = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
-        raise InputError(f"{path} is not valid YAML: {exc}. Fix the YAML.") from exc
+        # The text of the YAML error has more than one line and shows a line of
+        # the file. Give only the place of the error.
+        raise InputError(
+            f"{path} is not valid YAML{_place(exc)}. Fix the YAML."
+        ) from exc
+    except ValueError as exc:
+        # PyYAML raises a plain ValueError for a value such as a date that does
+        # not exist (2026-09-31).
+        raise InputError(
+            f"{path} has a value that is not valid, for example a date that "
+            "does not exist. Fix the value, or put it in quotes."
+        ) from exc
     if not isinstance(meta, dict):
         raise InputError(f"{path} is not a mapping. Fix the YAML.")
     return meta

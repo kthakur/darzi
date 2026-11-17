@@ -6,11 +6,13 @@ import datetime as dt
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from darzi import cli
 from darzi.cli import main
+from darzi.facts.repo import InputError
 from darzi.runs.runs import APPLICATIONS, JOB, RUN_YAML, STATUSES, load_meta, run_name
 from darzi.runs.status import RunRow, list_runs
 
@@ -68,11 +70,11 @@ def _status(root: Path, *extra: str) -> int:
     return main(["status", "--repo", str(root), *extra])
 
 
-def _tree(folder: Path) -> dict[str, bytes]:
+def _tree(folder: Path) -> dict[str, bytes | None]:
+    """Return each file (with its content) and each folder (None) under `folder`."""
     return {
-        str(p.relative_to(folder)): p.read_bytes()
+        str(p.relative_to(folder)): p.read_bytes() if p.is_file() else None
         for p in folder.rglob("*")
-        if p.is_file()
     }
 
 
@@ -199,6 +201,122 @@ def test_a_bad_run_yaml_is_an_error(
     assert "Initech" in out and out.endswith("2 runs.\n")
 
 
+BAD_DATE = "created: 2026-09-31"  # not quoted, and September has 30 days
+
+
+def _write_bad_date(root: Path) -> None:
+    path = root / APPLICATIONS / INITECH / RUN_YAML
+    text = path.read_text(encoding="utf-8")
+    assert "created: '2026-10-02'" in text
+    path.write_text(text.replace("created: '2026-10-02'", BAD_DATE), encoding="utf-8")
+
+
+def test_a_date_that_does_not_exist_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_bad_date(data_root)
+    assert _status(data_root) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    lines = captured.out.splitlines()
+    assert lines[1].startswith("2026-09-14  Globex")
+    assert lines[2].startswith("2026-11-03  Example Labs")
+    assert lines[3].startswith(f"error status {INITECH}: ")
+    assert "a date that does not exist" in lines[3]
+    assert lines[4:] == ["2 runs."]
+
+
+def test_a_date_that_does_not_exist_json(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_bad_date(data_root)
+    assert _status(data_root, "--json") == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    assert report["ok"] is False
+    assert (report["errors"], report["warnings"]) == (1, 0)
+    assert report["runs"] == [EXPECTED_ROWS[0], EXPECTED_ROWS[2]]
+    [finding] = report["findings"]
+    assert (finding["severity"], finding["location"]) == ("error", INITECH)
+    assert "a date that does not exist" in finding["message"]
+
+
+def test_a_bad_yaml_finding_shows_no_line_of_the_file(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = data_root / APPLICATIONS / GLOBEX / RUN_YAML
+    path.write_text("company: [unclosed hidden-text\n", encoding="utf-8")
+    assert _status(data_root) == 1
+    out = capsys.readouterr().out
+    assert "hidden-text" not in out
+    assert len(out.splitlines()) == 5  # header, 2 rows, 1 finding, the count
+    assert "is not valid YAML (line 2, column 1). Fix the YAML." in out
+
+
+# A line end in a folder name cannot start a false line (S1 of the review).
+
+FAKE_ROW = "2026-12-31  Evil Corp  Fake Role  ux  submitted"
+
+
+def test_a_line_end_in_a_folder_name_of_an_error_stays_on_one_line(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (data_root / APPLICATIONS / f"2026-01-01-x\n{FAKE_ROW}\tmore").mkdir()
+    assert _status(data_root) == 1
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert len(lines) == 6  # header, 3 rows, 1 finding, the count
+    assert not any(line.startswith(FAKE_ROW) for line in lines)
+    assert "\t" not in out
+    assert lines[4].startswith(f"error status 2026-01-01-x?{FAKE_ROW}?more: ")
+
+
+def test_a_line_end_in_a_folder_name_of_a_warning_stays_on_one_line(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = data_root / APPLICATIONS / f"2026-01-01-y\n{FAKE_ROW}\tmore"
+    run.mkdir()
+    (run / RUN_YAML).write_text("status: applied\n", encoding="utf-8")
+    assert _status(data_root) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert len(lines) == 7  # header, 4 rows, 1 finding, the count
+    assert not any(line.startswith(FAKE_ROW) for line in lines)
+    assert "\t" not in out
+    assert lines[5].startswith(f"warning status 2026-01-01-y?{FAKE_ROW}?more: ")
+
+
+def test_status_json_keeps_the_true_folder_name(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name = f"2026-01-01-x\n{FAKE_ROW}\tmore"
+    (data_root / APPLICATIONS / name).mkdir()
+    assert _status(data_root, "--json") == 1
+    report = json.loads(capsys.readouterr().out)
+    assert [f["location"] for f in report["findings"]] == [name]
+
+
+def test_an_applications_folder_that_cannot_be_read(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "iterdir", fail)
+    folder = data_root / APPLICATIONS
+    with pytest.raises(InputError) as exc:
+        list_runs(data_root)
+    assert str(exc.value) == f"{folder} cannot be read: Permission denied."
+    assert _status(data_root) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    message = f"{folder} cannot be read: Permission denied."
+    assert captured.err == f"facts status: {message}\n"
+
+
 def test_an_unknown_status_is_a_warning(
     data_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -262,6 +380,19 @@ def test_a_terminal_escape_code_is_shown_as_a_question_mark(
     assert "\x1b" not in out and "\u202e" not in out
     assert "Glo?[31mbex??X" in out.splitlines()[1]
     assert len(out.splitlines()) == 5
+
+
+def test_a_tab_in_a_table_cell_is_shown_as_a_question_mark(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = data_root / APPLICATIONS / GLOBEX / RUN_YAML
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace("Globex", '"Glo\\tbex"'), encoding="utf-8")
+    assert list_runs(data_root)[0][0].company == "Glo\tbex"
+    assert _status(data_root) == 0
+    out = capsys.readouterr().out
+    assert "\t" not in out
+    assert out.splitlines()[1].startswith("2026-09-14  Glo?bex ")
 
 
 def test_a_terminal_escape_code_in_a_finding_is_shown_as_a_question_mark(

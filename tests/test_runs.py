@@ -19,6 +19,7 @@ from darzi.facts.repo import InputError
 from darzi.runs import runs
 from darzi.runs.runs import (
     APPLICATIONS,
+    APPROVAL,
     JOB,
     RUN_YAML,
     STATUSES,
@@ -42,11 +43,11 @@ def root(tmp_path: Path) -> Path:
     return folder
 
 
-def _tree(folder: Path) -> dict[str, bytes]:
+def _tree(folder: Path) -> dict[str, bytes | None]:
+    """Return each file (with its content) and each folder (None) under `folder`."""
     return {
-        str(p.relative_to(folder)): p.read_bytes()
+        str(p.relative_to(folder)): p.read_bytes() if p.is_file() else None
         for p in folder.rglob("*")
-        if p.is_file()
     }
 
 
@@ -94,6 +95,18 @@ def test_hash_is_pinned() -> None:
     )
 
 
+def test_file_names_are_the_source_names() -> None:
+    # Work item W-5 reads approval.json with this name. The source has the same
+    # names.
+    assert (APPLICATIONS, JOB, RUN_YAML, APPROVAL) == (
+        "applications",
+        "job.md",
+        "run.yaml",
+        "approval.json",
+    )
+    assert runs.RUN_SCHEMA_VERSION == 1
+
+
 # Folder names: the source slug, with no change
 
 
@@ -114,6 +127,8 @@ def test_run_name_with_spaces_and_punctuation() -> None:
         ("na\u00efve", "na-ve"),
         ("../../x", "x"),
         ("a/b\\c", "a-b-c"),
+        ("UX_Lead", "ux-lead"),  # an underscore becomes a hyphen, as in the source
+        ("__a__b__", "a-b"),
     ],
 )
 def test_slug(text: str, expected: str) -> None:
@@ -266,6 +281,57 @@ def test_load_meta_refuses_bad_yaml(tmp_path: Path) -> None:
         load_meta(tmp_path)
 
 
+def test_load_meta_gives_a_short_message_for_bad_yaml(tmp_path: Path) -> None:
+    # The message is one line: the place of the error, not a line of the file.
+    (tmp_path / RUN_YAML).write_text(
+        "status: new\ncompany: [unclosed hidden-text\n", encoding="utf-8"
+    )
+    with pytest.raises(InputError) as exc:
+        load_meta(tmp_path)
+    message = str(exc.value)
+    assert "\n" not in message and "hidden-text" not in message
+    assert message == (
+        f"{tmp_path / RUN_YAML} is not valid YAML (line 3, column 1). Fix the YAML."
+    )
+
+
+@pytest.mark.parametrize(
+    "created", ["2026-09-31", "2026-02-30", "2026-13-01", "0000-01-01"]
+)
+def test_load_meta_refuses_a_date_that_does_not_exist(
+    tmp_path: Path, created: str
+) -> None:
+    # PyYAML raises a plain ValueError here, not a YAML error.
+    with pytest.raises(ValueError):
+        yaml.safe_load(f"created: {created}\n")
+    (tmp_path / RUN_YAML).write_text(
+        f"company: Acme\ncreated: {created}\n", encoding="utf-8"
+    )
+    with pytest.raises(InputError, match="a date that does not exist") as exc:
+        load_meta(tmp_path)
+    assert str(exc.value).startswith(f"{tmp_path / RUN_YAML} has a value")
+    assert "\n" not in str(exc.value)
+
+
+def test_load_meta_reads_a_quoted_date_that_does_not_exist(tmp_path: Path) -> None:
+    (tmp_path / RUN_YAML).write_text("created: '2026-09-31'\n", encoding="utf-8")
+    assert load_meta(tmp_path) == {"created": "2026-09-31"}
+
+
+def test_load_meta_refuses_a_file_that_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / RUN_YAML).write_text("status: new\n", encoding="utf-8")
+
+    def fail(*args: Any, **kwargs: Any) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", fail)
+    with pytest.raises(InputError) as exc:
+        load_meta(tmp_path)
+    assert str(exc.value) == f"{tmp_path / RUN_YAML} cannot be read: Permission denied."
+
+
 @pytest.mark.parametrize("text", ["- a\n- b\n", "just text\n", "5\n"])
 def test_load_meta_refuses_a_file_that_is_not_a_mapping(
     tmp_path: Path, text: str
@@ -323,9 +389,15 @@ def test_cli_new_run_uses_today(
 ) -> None:
     job = tmp_path / "post.txt"
     job.write_text("Build prototypes.", encoding="utf-8")
+    before = dt.date.today()
     assert _new_run(root, "--job", str(job)) == 0
+    after = dt.date.today()
     run = Path(capsys.readouterr().out.strip())
-    assert run.name.startswith(dt.date.today().isoformat())
+    # Accept either date, so that the test does not fail at midnight.
+    assert run.name in {
+        run_name("Acme", "Designer", before),
+        run_name("Acme", "Designer", after),
+    }
 
 
 def test_cli_new_run_from_stdin(
@@ -337,7 +409,38 @@ def test_cli_new_run_from_stdin(
     _stdin(monkeypatch, "Caf\u00e9 job.\r\nLine two.\r\n".encode())
     assert _new_run(root, "--job", "-") == 0
     run = Path(capsys.readouterr().out.strip())
-    assert (run / JOB).read_bytes() == "Caf\u00e9 job.\nLine two.\n".encode()
+    # The CR LF inside stays. new_run removes the white space at the end.
+    assert (run / JOB).read_bytes() == "Caf\u00e9 job.\r\nLine two.\n".encode()
+
+
+def test_cli_new_run_keeps_the_line_ends_from_stdin(
+    root: Path,
+    today: dt.date,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # As in the source on macOS and Linux: CR LF and a lone CR stay as they are.
+    # Only the white space at the end changes (new_run writes one last "\n").
+    _stdin(monkeypatch, b"One.\r\nTwo.\rThree.\nFour.\r\n")
+    assert _new_run(root, "--job", "-") == 0
+    run = Path(capsys.readouterr().out.strip())
+    assert (run / JOB).read_bytes() == b"One.\r\nTwo.\rThree.\nFour.\n"
+
+
+def test_cli_stdin_is_utf8_independent_of_the_locale(
+    root: Path,
+    today: dt.date,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The text wrapper says Latin-1. The bytes are UTF-8. The command reads the
+    # bytes, so job.md holds the correct text.
+    data = "Caf\u00e9 \u2013 forms.\n".encode()
+    wrapper = io.TextIOWrapper(io.BytesIO(data), encoding="latin-1")
+    monkeypatch.setattr("sys.stdin", wrapper)
+    assert _new_run(root, "--job", "-") == 0
+    run = Path(capsys.readouterr().out.strip())
+    assert (run / JOB).read_bytes() == data
 
 
 def test_cli_new_run_json(
@@ -516,6 +619,19 @@ def test_cli_url_is_not_built_yet(
         "Save the job post to a file and pass --job FILE, "
         "or paste it with --job -.\n"
     )
+    assert no_network == []
+    assert sorted(p.name for p in root.iterdir()) == ["master.yaml"]
+
+
+def test_cli_empty_url_is_not_built_yet(
+    root: Path,
+    today: dt.date,
+    no_network: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    err = _refused(root, capsys, "--url", "")
+    assert err.startswith("facts new-run: --url is not built yet.")
+    assert "work item W-10" in err
     assert no_network == []
     assert sorted(p.name for p in root.iterdir()) == ["master.yaml"]
 
