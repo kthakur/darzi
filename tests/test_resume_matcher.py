@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +15,15 @@ import pytest
 
 from darzi.config import RenderSettings, ResumeMatcherSettings, load_config
 from darzi.facts.repo import InputError
+from darzi.paths import exists, is_file
 from darzi.render.port import RenderError, RenderResult
 from darzi.render.resume_matcher import (
-    LOCK_FILE,
+    LOCK_PREFIX,
     SCRATCH_TITLE,
     TIMEOUT_SECONDS,
     ResumeMatcher,
     check_settings,
+    lock_path,
     loopback_url,
     run_command,
 )
@@ -31,6 +36,35 @@ RESUME: dict[str, Any] = {
     "summary": "Designer.",
 }
 LETTER = {"pageSize": "LETTER"}
+
+
+@pytest.fixture(autouse=True)
+def own_temp_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Give the lock files a temporary folder of the test."""
+    folder = tmp_path / "system-tmp"
+    folder.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    yield folder
+
+
+def _tree(folder: Path) -> list[tuple[str, int, int, bytes | None]]:
+    """Return each path in `folder` with its size, write time and content."""
+    return sorted(
+        (
+            str(p.relative_to(folder)),
+            p.stat().st_size,
+            p.stat().st_mtime_ns,
+            p.read_bytes() if is_file(p) else None,
+        )
+        for p in [folder, *folder.rglob("*")]
+    )
+
+
+def _fill(data_dir: Path) -> None:
+    """Put files in `data_dir` as a Resume Matcher data folder has them."""
+    (data_dir / "uploads").mkdir(parents=True)
+    (data_dir / "database.db").write_bytes(b"SQLite format 3\0" + bytes(range(64)))
+    (data_dir / "uploads" / "note.txt").write_text("Test Person\n", "utf-8")
 
 
 # --- The command and the environment -------------------------------------------
@@ -154,7 +188,9 @@ def test_first_render_creates_the_scratch_record_then_updates_it(
         "print_settings": {"pageSize": "LETTER", "compactMode": True},
     }
     assert len(cli.records) == 1 and cli.records[0]["data"] == changed
-    assert (tmp_path / "rm-data" / LOCK_FILE).is_file()
+    lock = lock_path(tmp_path / "rm-data")
+    assert is_file(lock) and lock.parent == Path(tempfile.gettempdir())
+    assert list((tmp_path / "rm-data").iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -191,6 +227,51 @@ def test_two_scratch_records_stop_the_render_before_a_write(tmp_path: Path) -> N
     assert cli.tools() == ["list_resumes"]
 
 
+class _BadList(FakeCli):
+    """A fake CLI whose list answer is not valid."""
+
+    def _answer(self, tool: str, args: dict[str, Any]) -> Any:
+        if tool == "list_resumes":
+            return {"resumes": 3}
+        return super()._answer(tool, args)
+
+
+def _other() -> FakeCli:
+    cli = FakeCli()
+    cli.add("Test Person Master Resume")
+    return cli
+
+
+def _two_scratch() -> FakeCli:
+    cli = FakeCli()
+    cli.add(SCRATCH_TITLE)
+    cli.add(SCRATCH_TITLE)
+    return cli
+
+
+@pytest.mark.parametrize(
+    ("make", "words"),
+    [
+        (_other, "did not make"),
+        (_two_scratch, "2 records with the title"),
+        (_BadList, "no list"),
+        (lambda: FakeCli(fail={"list_resumes": "database is locked"}), "failed"),
+    ],
+)
+def test_a_refused_render_leaves_the_data_folder_unchanged(
+    tmp_path: Path, make: Any, words: str
+) -> None:
+    cli: FakeCli = make()
+    rm = fake_renderer(tmp_path, cli)
+    _fill(rm.config.data_dir)
+    before = _tree(rm.config.data_dir)
+    with pytest.raises(InputError, match=words):
+        rm.render(RESUME, LETTER, tmp_path / "a.pdf")
+    assert _tree(rm.config.data_dir) == before
+    assert cli.tools() == ["list_resumes"]
+    assert not exists(tmp_path / "a.pdf")
+
+
 def test_a_list_that_is_not_a_list_is_a_render_error(tmp_path: Path) -> None:
     rm = ResumeMatcher(
         fake_install(tmp_path), runner=lambda cmd, stdin: (0, '{"resumes": 3}', "")
@@ -222,14 +303,42 @@ def test_each_write_names_only_the_scratch_record(tmp_path: Path) -> None:
 def test_a_held_lock_stops_a_second_render(tmp_path: Path) -> None:
     cli = FakeCli()
     rm = fake_renderer(tmp_path, cli)
-    rm.config.data_dir.mkdir()
-    with (rm.config.data_dir / LOCK_FILE).open("a") as other:
+    other = os.open(lock_path(rm.config.data_dir), os.O_WRONLY | os.O_CREAT)
+    try:
         fcntl.flock(other, fcntl.LOCK_EX)
         with pytest.raises(RenderError, match="another render"):
             rm.render(RESUME, LETTER, tmp_path / "a.pdf")
+    finally:
+        os.close(other)
     assert cli.calls == []
+    assert not exists(rm.config.data_dir)
     rm.render(RESUME, LETTER, tmp_path / "a.pdf")
     assert cli.tools()[-1] == "export_resume_pdf"
+
+
+def test_the_lock_file_name_comes_from_the_resolved_data_folder(
+    tmp_path: Path, own_temp_folder: Path
+) -> None:
+    (tmp_path / "data").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "data")
+    lock = lock_path(tmp_path / "data")
+    assert lock.parent == own_temp_folder
+    assert lock.name.startswith(LOCK_PREFIX) and lock.suffix == ".lock"
+    assert lock_path(tmp_path / "link") == lock
+    assert lock_path(tmp_path / "other") != lock
+
+
+def test_the_render_makes_only_the_last_folder_level(tmp_path: Path) -> None:
+    rm = fake_renderer(tmp_path, FakeCli())
+    rm.render(RESUME, LETTER, tmp_path / "a.pdf")
+    assert list(rm.config.data_dir.iterdir()) == []
+    deep = ResumeMatcher(
+        type(rm.config)(rm.config.path, tmp_path / "no" / "data", "", ""),
+        runner=FakeCli(),
+    )
+    with pytest.raises(InputError, match="cannot use the data folder"):
+        deep.render(RESUME, LETTER, tmp_path / "b.pdf")
+    assert not exists(tmp_path / "no")
 
 
 def test_a_data_folder_that_cannot_be_made_is_an_input_error(tmp_path: Path) -> None:
@@ -377,6 +486,53 @@ def test_an_install_link_that_holds_the_data_dir_is_refused(tmp_path: Path) -> N
     (tmp_path / "rm").symlink_to(tmp_path / "real")
     with pytest.raises(InputError, match="is inside the Resume Matcher folder"):
         check_settings(tmp_path, _settings(path="rm", data_dir="real/data"))
+
+
+@pytest.mark.parametrize(
+    ("data_dir", "words"),
+    [
+        (".", "is the data root"),
+        ("rm/..", "is the data root"),
+        ("..", "holds the data root"),
+        ("tools", "holds the Resume Matcher folder"),
+    ],
+)
+def test_a_data_dir_that_is_or_holds_the_data_root_or_the_install_is_refused(
+    tmp_path: Path, data_dir: str, words: str
+) -> None:
+    (tmp_path / "tools" / "rm" / "apps" / "backend").mkdir(parents=True)
+    (tmp_path / "rm" / "apps" / "backend").mkdir(parents=True)
+    path = "tools/rm" if data_dir == "tools" else "rm"
+    with pytest.raises(InputError, match=words):
+        check_settings(tmp_path, _settings(path=path, data_dir=data_dir))
+
+
+def test_a_data_dir_link_to_the_data_root_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "root" / "rm" / "apps" / "backend").mkdir(parents=True)
+    (tmp_path / "root" / "link").symlink_to(tmp_path / "root")
+    with pytest.raises(InputError, match="is the data root"):
+        check_settings(tmp_path / "root", _settings(data_dir="link"))
+
+
+@pytest.mark.parametrize("data_dir", [".rm-data", "work/rm-data"])
+def test_a_data_dir_inside_the_data_root_is_correct(
+    tmp_path: Path, data_dir: str
+) -> None:
+    (tmp_path / "rm" / "apps" / "backend").mkdir(parents=True)
+    config = check_settings(tmp_path, _settings(data_dir=data_dir))
+    assert config.data_dir == (tmp_path / data_dir).resolve()
+
+
+@pytest.mark.parametrize("key", ["path", "data_dir", "frontend_url", "backend_url"])
+@pytest.mark.parametrize("char", ["\0", "\n", "\r", "\t", "\u2028"])
+def test_a_nul_a_line_end_or_a_tab_is_refused(
+    tmp_path: Path, key: str, char: str
+) -> None:
+    (tmp_path / "rm" / "apps" / "backend").mkdir(parents=True)
+    good = _settings().resume_matcher
+    value = f"{getattr(good, key)}{char}x"
+    with pytest.raises(InputError, match=f"{key} .* holds a NUL character"):
+        check_settings(tmp_path, _settings(**{key: value}))
 
 
 def test_the_synthetic_facts_toml_stops_at_the_loopback_check() -> None:

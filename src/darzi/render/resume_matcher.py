@@ -24,18 +24,26 @@ Guards (docs/SPEC.md section 9):
 - `data_dir` is required and must not be inside the Resume Matcher folder
   `path`, after each symbolic link is followed. So the default data folder of
   Resume Matcher, which can hold the owner's own résumés, is never used.
+  `data_dir` must also not be the data root, hold the data root, or hold
+  `path`. A folder inside the data root, such as `.rm-data`, is correct.
+- The four settings must not hold a NUL character, a line end or a tab.
 - The data folder must hold no record other than the scratch record, and at
-  most one scratch record. Else the render stops before a write.
+  most one scratch record. Else the render stops before a write: darzi writes
+  nothing in the data folder before the list of records passes this rule.
 - `frontend_url` and `backend_url` must be `http` URLs on a loopback address.
 - `DATABASE_URL` is empty for the CLI, so Resume Matcher uses SQLite in
   `data_dir` and not a database that a `.env` file names.
-- A lock file in the data folder stops two renders at the same time.
+- A lock file stops two renders at the same time. It is in the system
+  temporary folder and not in the data folder (see `lock_path`).
 - `uv run --no-sync` does not change the Resume Matcher install.
 """
 
 import fcntl
+import hashlib
 import json
+import os
 import subprocess
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,11 +59,15 @@ ADAPTER = "resume-matcher"
 ENV = "/usr/bin/env"
 TIMEOUT_SECONDS = 120
 SCRATCH_TITLE = "darzi scratch"
-LOCK_FILE = "darzi-render.lock"
+# The lock file name is LOCK_PREFIX + a hash of the data folder + LOCK_SUFFIX.
+LOCK_PREFIX = "darzi-render-"
+LOCK_SUFFIX = ".lock"
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 # The keys of [render.resume_matcher] that a render needs.
 REQUIRED = ("path", "data_dir", "frontend_url", "backend_url")
 SECTION = "[render.resume_matcher]"
+# A NUL character, a tab and each line end of str.splitlines().
+BAD_CHARACTERS = "\0\t\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 # A runner takes the argument list and the stdin text. It returns the exit
 # code, stdout and stderr. Tests give a fake runner.
@@ -110,8 +122,10 @@ def check_settings(repo: Path, render: RenderSettings | None) -> ResumeMatcherCo
 
     Relative paths start at `repo`. Raises InputError when `[render]` is
     absent, the adapter is not "resume-matcher", a required key is absent, a
-    URL is not a loopback http URL, `path` has no `apps/backend` folder, or
-    `data_dir` is inside `path`.
+    value holds a NUL character, a line end or a tab, a URL is not a loopback
+    http URL, `path` has no `apps/backend` folder, `data_dir` is inside
+    `path`, or `data_dir` is the data root, holds the data root or holds
+    `path`. A `data_dir` inside the data root is correct.
     """
     if render is None:
         raise InputError(
@@ -128,6 +142,11 @@ def check_settings(repo: Path, render: RenderSettings | None) -> ResumeMatcherCo
     for name, value in values.items():
         if value is None:
             raise InputError(f"facts.toml has no {SECTION} {name}. Add it.")
+        if any(char in BAD_CHARACTERS for char in value):
+            raise InputError(
+                f"{SECTION} {name} {value!r} holds a NUL character, a line end "
+                "or a tab. Remove it from facts.toml."
+            )
     frontend = loopback_url("frontend_url", values["frontend_url"])
     backend = loopback_url("backend_url", values["backend_url"])
     path = _resolve(repo, "path", values["path"])
@@ -142,7 +161,34 @@ def check_settings(repo: Path, render: RenderSettings | None) -> ResumeMatcherCo
             f"{SECTION} data_dir {data_dir} is inside the Resume Matcher folder "
             f"{path}. Use a folder outside it that only darzi uses."
         )
+    root = _resolve(repo, "data root", ".")
+    use = "Use a folder that only darzi uses, such as .rm-data in the data root."
+    if data_dir == root:
+        raise InputError(f"{SECTION} data_dir {data_dir} is the data root. {use}")
+    if data_dir in root.parents:
+        raise InputError(
+            f"{SECTION} data_dir {data_dir} holds the data root {root}. {use}"
+        )
+    if data_dir in path.parents:
+        raise InputError(
+            f"{SECTION} data_dir {data_dir} holds the Resume Matcher folder "
+            f"{path}. {use}"
+        )
     return ResumeMatcherConfig(path, data_dir, frontend, backend)
+
+
+def lock_path(data_dir: Path) -> Path:
+    """Return the lock file of the data folder `data_dir`.
+
+    The lock file is in the system temporary folder, not in the data folder.
+    So a render writes nothing in the data folder before the list of records
+    passes the scratch-only rule. The name holds the SHA-256 hash of the
+    resolved `data_dir` path: the same data folder always gives the same lock
+    file, also through a symbolic link. Raises OSError or RuntimeError when
+    the path cannot be resolved.
+    """
+    key = hashlib.sha256(os.fsencode(data_dir.resolve())).hexdigest()[:32]
+    return Path(tempfile.gettempdir()) / f"{LOCK_PREFIX}{key}{LOCK_SUFFIX}"
 
 
 def run_command(cmd: Sequence[str], stdin: str) -> tuple[int, str, str]:
@@ -256,23 +302,29 @@ class ResumeMatcher:
     ) -> RenderResult:
         """Write the PDF of `resume` to `out` through the scratch record.
 
-        Raises RenderError when Resume Matcher fails, and InputError for bad
-        input, a data folder with other records, or a data folder that cannot
-        be made.
+        The order is: take the lock (a write only in the temporary folder),
+        make the data folder when it does not exist (one level, no parents),
+        list and test the records, create or update the scratch record, export
+        the PDF, release the lock. A held lock stops the render at once.
+
+        Raises RenderError when Resume Matcher fails or the lock is held, and
+        InputError for bad input, a data folder with other records, or a data
+        folder that cannot be made.
         """
         out = out.resolve()
         if out.suffix.lower() != ".pdf":
             raise InputError(f"{out} does not end with .pdf. Give a .pdf path.")
         data_dir = self.config.data_dir
         try:
-            data_dir.mkdir(parents=True, exist_ok=True)
-            lock = (data_dir / LOCK_FILE).open("a")
-        except OSError as exc:
-            raise InputError(
-                f"cannot use the data folder {data_dir}: {exc.strerror}. "
-                "Check data_dir and its permissions."
+            lock_file = lock_path(data_dir)
+            # O_NOFOLLOW: a symbolic link in the temporary folder is refused.
+            lock = os.open(lock_file, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except (OSError, RuntimeError) as exc:
+            raise RenderError(
+                f"cannot open the lock file for the data folder {data_dir}: "
+                f"{exc}. Check the temporary folder."
             ) from exc
-        with lock:
+        try:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
@@ -280,23 +332,47 @@ class ResumeMatcher:
                     f"another render uses {data_dir} now. Wait for it to end, "
                     "then try again."
                 ) from exc
-            rid = self.scratch_id()
-            if rid is None:
-                created = self.call(
-                    "create_master_resume",
-                    {"resume_data": resume, "title": SCRATCH_TITLE},
-                )
-                new_id: Any = created.get("resume_id")
-                if not isinstance(new_id, str):
-                    raise RenderError("resume-matcher create_master_resume gave no id.")
-                rid = new_id
-            else:
-                self.call("update_resume", {"resume_id": rid, "resume_data": resume})
-            exported = self.call(
-                "export_resume_pdf",
-                {"resume_id": rid, "output_path": str(out), "print_settings": settings},
-            )
+            self._make_data_dir()
+            exported = self._write(resume, settings, out)
+        finally:
+            os.close(lock)  # This also releases the lock.
         return _result(exported, out)
+
+    def _make_data_dir(self) -> None:
+        """Make the data folder when it does not exist: one level, no parents.
+
+        A folder that this makes is empty, so it holds no other record.
+        """
+        data_dir = self.config.data_dir
+        try:
+            if not is_dir(data_dir):
+                data_dir.mkdir()
+        except OSError as exc:
+            raise InputError(
+                f"cannot use the data folder {data_dir}: {exc.strerror}. Check "
+                "data_dir, its parent folder and their permissions."
+            ) from exc
+
+    def _write(
+        self, resume: dict[str, Any], settings: dict[str, Any], out: Path
+    ) -> dict[str, Any]:
+        """Test the records, write the scratch record and export. Hold the lock."""
+        rid = self.scratch_id()
+        if rid is None:
+            created = self.call(
+                "create_master_resume",
+                {"resume_data": resume, "title": SCRATCH_TITLE},
+            )
+            new_id: Any = created.get("resume_id")
+            if not isinstance(new_id, str):
+                raise RenderError("resume-matcher create_master_resume gave no id.")
+            rid = new_id
+        else:
+            self.call("update_resume", {"resume_id": rid, "resume_data": resume})
+        return self.call(
+            "export_resume_pdf",
+            {"resume_id": rid, "output_path": str(out), "print_settings": settings},
+        )
 
 
 def _result(exported: dict[str, Any], out: Path) -> RenderResult:

@@ -326,12 +326,17 @@ def _render(run: Path, repo_arg: Path | None, draft: bool, as_json: bool) -> int
         return 2
     folder = Path(tempfile.mkdtemp(prefix="darzi-draft-"))
     pdf = folder / "resume.pdf"
+    done = False
     try:
         result = renderer.render(resume, settings, pdf)
+        done = True
     except InputError as exc:
-        shutil.rmtree(folder, ignore_errors=True)
         print(_line(f"facts render: {exc}"), file=sys.stderr)
         return 1 if isinstance(exc, RenderError) else 2
+    finally:
+        # Each other exception rises after this clean-up.
+        if not done:
+            shutil.rmtree(folder, ignore_errors=True)
     if as_json:
         data = {
             "schema_version": JSON_SCHEMA_VERSION,

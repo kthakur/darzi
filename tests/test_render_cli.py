@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,15 @@ from .conftest import DATA
 from .render_fakes import FakeCli, fake_renderer
 
 EXPORT = DATA.parent / "expected" / "corporate-tech.export.json"
+
+
+@pytest.fixture(autouse=True)
+def own_temp_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Give the draft folders and the lock files a temporary folder of the test."""
+    folder = tmp_path / "system-tmp"
+    folder.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    return folder
 
 
 def _root(tmp_path: Path) -> tuple[Path, Path]:
@@ -169,6 +179,33 @@ def test_renderer_errors_give_exit_codes_and_remove_the_folder(
     assert str(error) in capsys.readouterr().err
     assert not fake.calls[0][2].parent.exists()
     assert _snapshot(run) == before
+
+
+def test_another_exception_rises_after_the_folder_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own_temp_folder: Path
+) -> None:
+    root, run = _root(tmp_path)
+    fake = FakeRenderer(ValueError("a bug in the renderer"))
+    _use(monkeypatch, fake)
+    with pytest.raises(ValueError, match="a bug in the renderer"):
+        main(["render", str(run), "--draft", "--repo", str(root)])
+    assert not fake.calls[0][2].parent.exists()
+    assert list(own_temp_folder.iterdir()) == []
+
+
+def test_a_nul_in_a_setting_gives_exit_code_2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, run = _root(tmp_path)
+    toml = root / "facts.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert text.count('data_dir = ".rm-data"') == 1
+    toml.write_text(text.replace('".rm-data"', '".rm\\u0000data"'), "utf-8")
+    _no_subprocess(monkeypatch)
+    assert main(["render", str(run), "--draft", "--repo", str(root)]) == 2
+    assert "holds a NUL character" in capsys.readouterr().err
 
 
 def test_bad_run_folders_give_exit_code_2(
