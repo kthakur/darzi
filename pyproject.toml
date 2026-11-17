@@ -59,3 +59,6 @@ reportUnknownVariableType = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "renderer: needs a Resume Matcher test instance (DARZI_RENDER_TEST names its TOML file)",
+]

@@ -317,6 +317,12 @@ class Renderer(Protocol):
 - The adapter must put the résumé into Resume Matcher to render it. Resume
   Matcher allows 5 master résumés. Use one scratch record and overwrite it for
   each render. Work item W-6 starts with a test of this.
+- Guards keep the owner's own Resume Matcher data safe: `data_dir` is required
+  and must not be inside the Resume Matcher folder, the data folder must hold
+  no record other than the one scratch record, `frontend_url` and
+  `backend_url` must be `http` on a loopback address, the CLI runs with an
+  empty `DATABASE_URL` and with `uv run --no-sync`, and a lock file in the
+  system temporary folder stops two renders at the same time.
 - Resume Matcher can change the JSON when it stores it. So the adapter does not
   compare JSON. The round-trip check decides.
 

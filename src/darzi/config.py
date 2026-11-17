@@ -1,8 +1,8 @@
 """Read the settings in `facts.toml` of the data root (docs/SPEC.md section 5).
 
 This module reads only `<data root>/facts.toml`. It reads no environment
-variable. Each work item adds the section that it needs: `[owner]` (W-4) and
-`[approval]` (W-5).
+variable. Each work item adds the section that it needs: `[owner]` (W-4),
+`[approval]` (W-5) and `[render]` (W-6).
 """
 
 import tomllib
@@ -35,12 +35,48 @@ class Approval:
     key: str | None = None
 
 
+# The keys of [render.resume_matcher] (docs/SPEC.md section 5). Each is a text.
+RESUME_MATCHER_KEYS = (
+    "path",
+    "commit",
+    "data_dir",
+    "frontend_url",
+    "backend_url",
+    "node",
+)
+
+
+@dataclass(frozen=True)
+class ResumeMatcherSettings:
+    """The `[render.resume_matcher]` settings, as text. None means: not set.
+
+    `path` and `data_dir` are relative to the data root. The module
+    `darzi.render.resume_matcher` checks and resolves them at render time.
+    """
+
+    path: str | None = None
+    commit: str | None = None
+    data_dir: str | None = None
+    frontend_url: str | None = None
+    backend_url: str | None = None
+    node: str | None = None
+
+
+@dataclass(frozen=True)
+class RenderSettings:
+    """The `[render]` settings. None means: not set."""
+
+    adapter: str | None = None
+    resume_matcher: ResumeMatcherSettings = ResumeMatcherSettings()
+
+
 @dataclass(frozen=True)
 class Config:
-    """The settings of one data root."""
+    """The settings of one data root. `render` is None without `[render]`."""
 
     owner_name: str = DEFAULT_OWNER
     approval: Approval = Approval()
+    render: RenderSettings | None = None
 
 
 def load_config(repo: Path) -> Config:
@@ -48,9 +84,10 @@ def load_config(repo: Path) -> Config:
 
     An absent `facts.toml`, `[owner]` section or `name` gives the name
     "the owner". An absent `[approval]` section or value gives None for that
-    value. Raises InputError when the file is not valid TOML, when `[owner]`
-    or `[approval]` is not a table, or when `name` or an `[approval]` value is
-    not a non-empty string.
+    value, and the same for `[render]`. Raises InputError when the file is not
+    valid TOML, when `[owner]`, `[approval]`, `[render]` or
+    `[render.resume_matcher]` is not a table, or when `name` or a value of
+    these sections is not a non-empty string.
     """
     path = repo / FACTS_TOML
     try:
@@ -72,7 +109,11 @@ def load_config(repo: Path) -> Config:
             f"{path} cannot be read: {exc.strerror}. "
             "Check the permissions of the file and its folder."
         ) from exc
-    return Config(owner_name=_owner_name(path, data), approval=_approval(path, data))
+    return Config(
+        owner_name=_owner_name(path, data),
+        approval=_approval(path, data),
+        render=_render(path, data),
+    )
 
 
 def _owner_name(path: Path, data: dict[str, Any]) -> str:
@@ -107,3 +148,37 @@ def _approval(path: Path, data: dict[str, Any]) -> Approval:
             )
         values[key] = value
     return Approval(**values)
+
+
+def _text(path: Path, section: str, key: str, value: Any) -> str | None:
+    """Return `value` when it is None or a non-empty text, else raise InputError."""
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise InputError(
+            f"{path}: [{section}] {key} must be a text that is not empty. "
+            f"Fix the {key}."
+        )
+    return value
+
+
+def _render(path: Path, data: dict[str, Any]) -> RenderSettings | None:
+    section: Any = data.get("render")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise InputError(f"{path}: render must be a table. Write it as [render].")
+    adapter = _text(path, "render", "adapter", section.get("adapter"))
+    table: Any = section.get("resume_matcher")
+    if table is None:
+        return RenderSettings(adapter=adapter)
+    if not isinstance(table, dict):
+        raise InputError(
+            f"{path}: render.resume_matcher must be a table. "
+            "Write it as [render.resume_matcher]."
+        )
+    values = {
+        key: _text(path, "render.resume_matcher", key, table.get(key))
+        for key in RESUME_MATCHER_KEYS
+    }
+    return RenderSettings(
+        adapter=adapter, resume_matcher=ResumeMatcherSettings(**values)
+    )
