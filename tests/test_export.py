@@ -20,6 +20,7 @@ from darzi.facts.selection import check_selection, load_selection, selection_has
 from darzi.schemas import SELECTION, load_schema
 
 from .conftest import DATA
+from .signing_root import approve, setup_signing, signed_copy
 
 RULES = load_rules(DATA)
 MASTER = load_master(DATA)
@@ -364,8 +365,9 @@ def _export(selection: Path, run: Path, repo: Path) -> int:
 def test_cli_export_writes_base_and_map(
     tmp_path: Path, path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    root = signed_copy(tmp_path)
     run = tmp_path / "applications" / "run"
-    assert _export(path, run, DATA) == 0
+    assert _export(root / "selections" / path.name, run, root) == 0
     base = json.loads((run / "base.json").read_text(encoding="utf-8"))
     base_map = json.loads((run / "base.map.json").read_text(encoding="utf-8"))
     selection = load_selection(path)
@@ -383,11 +385,12 @@ def test_exported_base_passes_facts_check(
     tmp_path: Path, path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The base, copied to tailored.json with no change, has no error."""
+    root = signed_copy(tmp_path)
     run = tmp_path / "run"
-    assert _export(path, run, DATA) == 0
+    assert _export(root / "selections" / path.name, run, root) == 0
     shutil.copy(run / "base.json", run / "tailored.json")
     capsys.readouterr()
-    assert main(["check", str(run), "--repo", str(DATA)]) == 0
+    assert main(["check", str(run), "--repo", str(root)]) == 0
     report = json.loads((run / "check.json").read_text(encoding="utf-8"))
     assert report["ok"] is True and report["errors"] == 0
     assert {f["rule"] for f in report["findings"]} == {"R-16"}  # warnings only
@@ -471,6 +474,9 @@ def test_cli_export_refuses_private_data(
     path = repo / "selections" / "ux.yaml"
     path.parent.mkdir()
     path.write_text(yaml.safe_dump(selection), encoding="utf-8")
+    setup_signing(repo, tmp_path / "keys")
+    assert approve(repo, path) == 0
+    capsys.readouterr()
     run = repo / "applications" / "run"
     assert _export(path, run, repo) == 1
     assert not run.exists()

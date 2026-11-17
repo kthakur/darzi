@@ -1,7 +1,6 @@
 """The `facts` command: help, version, planned commands and `facts validate`."""
 
 import json
-import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ from darzi import __version__
 from darzi.cli import PLANNED, main
 
 from .conftest import DATA
+from .signing_root import signed_copy
 
 # Each command of docs/SPEC.md section 6, by the work item that builds it.
 SPEC_COMMANDS = {
@@ -47,7 +47,16 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_each_spec_command_is_built_or_planned() -> None:
-    built = {"validate", "public", "query", "export", "check", "new-run", "status"}
+    built = {
+        "validate",
+        "public",
+        "query",
+        "export",
+        "check",
+        "new-run",
+        "status",
+        "approve",
+    }
     assert built | set(PLANNED) == SPEC_COMMANDS
     assert built.isdisjoint(PLANNED)
 
@@ -214,10 +223,11 @@ def test_validate_warning_only_exit_0(
 
 @pytest.fixture
 def data_root(tmp_path: Path) -> Path:
-    """A temporary copy of the synthetic data root that a test can change."""
-    root = tmp_path / "root"
-    shutil.copytree(DATA, root)
-    return root
+    """A temporary copy of the synthetic data root that a test can change.
+
+    A test key in the temporary folder signs both selections (W-5).
+    """
+    return signed_copy(tmp_path)
 
 
 def _export(root: Path, run: Path) -> int:
