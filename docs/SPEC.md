@@ -330,9 +330,17 @@ Round-trip check (`runs/roundtrip.py`), run by `finalize` on each output file:
 
 - Extract the text (`pypdf` for PDF, `python-docx` for Word).
 - Normalize: Unicode NFKC, soft hyphens removed, white space collapsed.
+- The match also ignores letter case, accepts a word that is broken with a
+  hyphen at a line end, accepts a date range and a link as approved or in the
+  form that the template shows, and, in a PDF only, matches a bullet with HTML
+  tags without the tags.
 - Each approved text item must be in the extracted text: name, contact data,
   each title, organization and date, each bullet, each skill, the summary. For
   the cover letter file: each paragraph.
+- The check also confirms each location, language, certification and award,
+  the description of an education entry and the role in a project, because
+  both renderers show them, and it confirms that the cover letter paragraphs
+  are in the approved order.
 - Inside one entry, the bullets must be in the approved order.
 - The sections must be in the approved order (`sectionMeta`). This shows that
   the text reads in the visual order.

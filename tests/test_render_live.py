@@ -24,6 +24,7 @@ import pytest
 from darzi.cli import main
 from darzi.config import load_config
 from darzi.render.resume_matcher import SCRATCH_TITLE, from_settings
+from darzi.runs.roundtrip import check_resume
 
 from .conftest import DATA
 
@@ -50,10 +51,8 @@ def _snapshot(folder: Path) -> list[tuple[str, int, int]]:
     )
 
 
-def test_draft_render_two_times_on_the_test_instance(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    rm = _instance()
+def _root_with_run(tmp_path: Path, rm: dict[str, Any]) -> tuple[Path, Path]:
+    """Return a copy of the synthetic data root for the test instance, and a run."""
     root = tmp_path / "root"
     shutil.copytree(DATA, root)
     text = (root / "facts.toml").read_text(encoding="utf-8")
@@ -73,7 +72,14 @@ def test_draft_render_two_times_on_the_test_instance(
         ("tailored.json", export["base"]),
     ):
         (run / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return root, run
 
+
+def test_draft_render_two_times_on_the_test_instance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rm = _instance()
+    root, run = _root_with_run(tmp_path, rm)
     renderer = from_settings(root, load_config(root).render)
     records = renderer.call("list_resumes", {"include_tailored": True})["resumes"]
     assert all(r["title"] == SCRATCH_TITLE for r in records), (
@@ -103,3 +109,27 @@ def test_draft_render_two_times_on_the_test_instance(
     )
     for result in results:
         shutil.rmtree(Path(result["pdf"]).parent)
+
+
+def test_roundtrip_check_on_a_real_pdf(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rm = _instance()
+    root, run = _root_with_run(tmp_path, rm)
+    code = main(["render", str(run), "--draft", "--repo", str(root), "--json"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    pdf = Path(json.loads(captured.out)["pdf"])
+    try:
+        approved: dict[str, Any] = json.loads(EXPORT.read_text(encoding="utf-8"))
+        approved = approved["base"]
+        findings = check_resume(approved, pdf)
+        assert findings == [], findings
+        # The approved JSON gets a bullet that the PDF does not have.
+        approved["workExperience"][0]["description"].append(
+            "Ran a design review each week with the support team."
+        )
+        findings = check_resume(approved, pdf)
+        assert [f.location for f in findings] == ["workExperience[0].description[2]"]
+    finally:
+        shutil.rmtree(pdf.parent)
