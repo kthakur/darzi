@@ -36,11 +36,13 @@ from darzi.facts.repo import (
 from darzi.facts.rules import validate_rules
 from darzi.facts.selection import check_selection, load_selection
 from darzi.facts.validate import Finding, validate
-from darzi.paths import is_file
+from darzi.paths import exists, is_file
 from darzi.runs.approve import safe
-from darzi.runs.runs import new_run
+from darzi.runs.runs import APPLICATIONS, new_run, run_name
 from darzi.runs.status import RunRow, list_runs
 from darzi.schemas import MASTER, RULES, SELECTION, load_schema
+from darzi.sourcing.fetch import fetch
+from darzi.sourcing.model import FetchFailure
 
 JSON_SCHEMA_VERSION = 1
 
@@ -100,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     new_cmd.add_argument("--role", required=True)
     source = new_cmd.add_mutually_exclusive_group(required=True)
     source.add_argument("--job", type=Path, help="job post file, or - for stdin")
-    source.add_argument("--url", help="job post link (not built yet: W-10)")
+    source.add_argument("--url", help="job post link: fetch one page")
     sub.add_parser("status", parents=[common], help="list all runs")
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
@@ -127,7 +129,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _query(args.repo, args.tags, args.text, args.json)
     if command == "new-run":
         if args.url is not None:
-            return _new_run_url()
+            return _new_run_url(args.company, args.role, args.url, args.repo, args.json)
         return _new_run(args.company, args.role, args.job, args.repo, args.json)
     if command == "status":
         return _status(args.repo, args.json)
@@ -302,16 +304,54 @@ def _today() -> dt.date:
     return dt.date.today()
 
 
-def _new_run_url() -> int:
-    # Work item W-10 builds the fetch. Until then --url makes no folder and no
-    # network call.
-    print(
-        "facts new-run: --url is not built yet. It comes in work item W-10. "
-        "Save the job post to a file and pass --job FILE, "
-        "or paste it with --job -.",
-        file=sys.stderr,
-    )
-    return 2
+def _new_run_url(
+    company: str, role: str, url: str, repo_arg: Path | None, as_json: bool
+) -> int:
+    # Test the data root, the names and the run folder before the fetch: bad
+    # input makes no network call, and a failed fetch makes no folder.
+    try:
+        repo = find_repo(repo_arg)
+        day = _today()
+        target = repo / APPLICATIONS / run_name(company, role, day)
+        if exists(target):
+            raise InputError(
+                f"{target} already exists. Use it, or choose another role name."
+            )
+    except InputError as exc:
+        print(f"facts new-run: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"facts new-run: cannot read the run folder: {exc}", file=sys.stderr)
+        return 1
+    result = fetch(url)
+    if isinstance(result, FetchFailure):
+        # A refusal of the input is exit code 2. Each other failure is 1.
+        print(
+            f"facts new-run: cannot fetch the job post ({result.reason}). "
+            f"{result.detail} Save the job post to a file and pass --job FILE, "
+            "or paste it with --job -.",
+            file=sys.stderr,
+        )
+        return 2 if result.refused else 1
+    try:
+        run = new_run(repo, company, role, result.text, day, apply_url=url)
+    except InputError as exc:
+        print(f"facts new-run: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"facts new-run: cannot write the run folder: {exc}", file=sys.stderr)
+        return 1
+    if as_json:
+        data = {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "command": "new-run",
+            "run": str(run),
+            "url": url,
+        }
+        print(json.dumps(data, indent=2))
+        return 0
+    print(run)
+    return 0
 
 
 def _read_job(job: Path) -> str:

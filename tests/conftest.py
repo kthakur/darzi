@@ -1,9 +1,10 @@
-"""Shared fixtures: a minimal synthetic master.yaml and a temporary data root."""
+"""Shared fixtures: no network, a minimal synthetic master.yaml, a data root."""
 
 from __future__ import annotations
 
 import copy
 import shutil
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,30 @@ import yaml
 from darzi.schemas import MASTER, load_schema
 
 DATA = Path(__file__).resolve().parent / "data"
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make each socket connect and each name lookup fail the test.
+
+    The fixture is on for each test, so that no test can make a real network
+    call. A test that needs a page uses a fake transport and a fake resolver.
+    """
+    calls: list[str] = []
+
+    def refuse(name: str) -> Any:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            raise AssertionError(f"network call: {name}")
+
+        return call
+
+    monkeypatch.setattr(socket.socket, "connect", refuse("connect"))
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse("connect_ex"))
+    monkeypatch.setattr(socket, "create_connection", refuse("create_connection"))
+    monkeypatch.setattr(socket, "getaddrinfo", refuse("getaddrinfo"))
+    return calls
+
 
 # The smallest synthetic master.yaml that passes every check. Tests change a copy.
 MINIMAL: dict[str, Any] = {

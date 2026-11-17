@@ -44,8 +44,18 @@ def run_name(company: str, role: str, day: dt.date) -> str:
     return f"{day.isoformat()}-{slug(company)}-{slug(role)}"
 
 
-def new_run(repo: Path, company: str, role: str, job_text: str, day: dt.date) -> Path:
+def new_run(
+    repo: Path,
+    company: str,
+    role: str,
+    job_text: str,
+    day: dt.date,
+    apply_url: str | None = None,
+) -> Path:
     """Make the run folder: `job.md` first, then `run.yaml`. Never overwrite.
+
+    `apply_url` is the URL of the job post for `new-run --url`. When it is None,
+    `run.yaml` has no `apply_url` key.
 
     Raises InputError for an empty job post, a company or a role that gives an
     empty name, and a run folder that already exists.
@@ -57,7 +67,7 @@ def new_run(repo: Path, company: str, role: str, job_text: str, day: dt.date) ->
         raise InputError(f"{run} already exists. Use it, or choose another role name.")
     run.mkdir(parents=True)
     (run / JOB).write_text(job_text.rstrip() + "\n", encoding="utf-8")
-    meta = {
+    meta: dict[str, Any] = {
         "schema_version": RUN_SCHEMA_VERSION,
         "company": company,
         "role": role,
@@ -66,6 +76,8 @@ def new_run(repo: Path, company: str, role: str, job_text: str, day: dt.date) ->
         "selection_hash": None,
         "status": "new",
     }
+    if apply_url is not None:
+        meta["apply_url"] = apply_url
     (run / RUN_YAML).write_text(yaml.safe_dump(meta, sort_keys=False), encoding="utf-8")
     return run
 
