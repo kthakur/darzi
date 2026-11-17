@@ -31,15 +31,18 @@ def load_config(repo: Path) -> Config:
     `[owner]` is not a table, or when `name` is not a non-empty string.
     """
     path = repo / FACTS_TOML
-    if not path.is_file():
-        return Config()
     try:
+        if not path.is_file():
+            return Config()
         with path.open("rb") as f:
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise InputError(f"{path} is not valid TOML: {exc}. Fix the TOML.") from exc
     except OSError as exc:
-        raise InputError(f"{path} cannot be read: {exc.strerror}.") from exc
+        raise InputError(
+            f"{path} cannot be read: {exc.strerror}. "
+            "Check the permissions of the file and its folder."
+        ) from exc
     owner: Any = data.get("owner")
     if owner is None:
         return Config()

@@ -344,6 +344,19 @@ def _new_run(
     # company or role that gives an empty name; a run folder that exists.
     try:
         text = _read_job(job)
+    except InputError as exc:
+        print(f"facts new-run: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # _read_job() turns each OSError of a job file into an InputError, so
+        # this error comes from the read of stdin.
+        print(
+            f"facts new-run: cannot read the job post from stdin: "
+            f"{exc.strerror or exc}. Save the job post to a file and pass --job FILE.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
         run = new_run(find_repo(repo_arg), company, role, text, _today())
     except InputError as exc:
         print(f"facts new-run: {exc}", file=sys.stderr)
@@ -379,13 +392,27 @@ def _status(repo_arg: Path | None, as_json: bool) -> int:
     return 1 if report["errors"] else 0
 
 
+def _encodable(text: str) -> str:
+    """Return `text` with "?" for each character that stdout cannot encode.
+
+    Python writes to stdout with errors="strict", so a character that the
+    terminal encoding (for example ASCII) does not have would raise an error.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return text.encode(encoding, "replace").decode(encoding, "replace")
+    except LookupError:  # an encoding name that Python does not know
+        return text.encode("ascii", "replace").decode("ascii")
+
+
 def _line(text: str) -> str:
     """Return `text` as one line of visible characters for the terminal.
 
     `safe()` keeps line ends and tabs. A line end or a tab would break the table
-    or start a false line, so it shows as "?" too.
+    or start a false line, so it shows as "?" too. A character that stdout
+    cannot encode shows as "?".
     """
-    return safe(text).replace("\n", "?").replace("\t", "?")
+    return _encodable(safe(text).replace("\n", "?").replace("\t", "?"))
 
 
 def _cell(value: str | None) -> str:
@@ -408,7 +435,7 @@ def _print_runs(rows: list[RunRow], findings: list[Finding]) -> None:
     for f in findings:
         # Exactly one line for each finding. A folder name can hold a line end.
         print(f"{f.severity} {f.rule} {_line(f.location)}: {_line(f.message)}")
-    print(safe(f"{len(rows)} runs."))
+    print(f"{len(rows)} run." if len(rows) == 1 else f"{len(rows)} runs.")
 
 
 def _report_data(command: str, target: Path, findings: list[Finding]) -> dict[str, Any]:

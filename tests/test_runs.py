@@ -329,7 +329,23 @@ def test_load_meta_refuses_a_file_that_cannot_be_read(
     monkeypatch.setattr(Path, "read_text", fail)
     with pytest.raises(InputError) as exc:
         load_meta(tmp_path)
-    assert str(exc.value) == f"{tmp_path / RUN_YAML} cannot be read: Permission denied."
+    assert str(exc.value) == (
+        f"{tmp_path / RUN_YAML} cannot be read: Permission denied. "
+        "Check the permissions of the file and its folder."
+    )
+
+
+def test_load_meta_refuses_a_file_it_cannot_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # is_file() too raises an OSError, for example for a run folder that the
+    # user cannot open.
+    def fail(*args: Any, **kwargs: Any) -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "is_file", fail)
+    with pytest.raises(InputError, match="cannot be read: Permission denied"):
+        load_meta(tmp_path)
 
 
 @pytest.mark.parametrize("text", ["- a\n- b\n", "just text\n", "5\n"])
@@ -441,6 +457,63 @@ def test_cli_stdin_is_utf8_independent_of_the_locale(
     assert _new_run(root, "--job", "-") == 0
     run = Path(capsys.readouterr().out.strip())
     assert (run / JOB).read_bytes() == data
+
+
+BOM_POST = b"\xef\xbb\xbfAcme needs a designer.\nLine two.\n"
+
+
+def test_cli_keeps_a_byte_order_mark_from_stdin(
+    root: Path,
+    today: dt.date,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # As the source: the UTF-8 byte order mark stays in job.md.
+    _stdin(monkeypatch, BOM_POST)
+    assert _new_run(root, "--job", "-") == 0
+    run = Path(capsys.readouterr().out.strip())
+    assert (run / JOB).read_bytes() == BOM_POST
+
+
+def test_cli_keeps_a_byte_order_mark_in_a_job_file(
+    root: Path, tmp_path: Path, today: dt.date, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # As the source: the UTF-8 byte order mark stays in job.md.
+    job = tmp_path / "post.txt"
+    job.write_bytes(BOM_POST)
+    assert _new_run(root, "--job", str(job)) == 0
+    run = Path(capsys.readouterr().out.strip())
+    assert (run / JOB).read_bytes() == BOM_POST
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            b"Acme needs a designer.\r\nLine two.\r\n",
+            b"Acme needs a designer.\nLine two.\n",
+        ),
+        (
+            b"\xef\xbb\xbfOne.\r\nTwo.\rThree.\nFour.\r\n",
+            b"\xef\xbb\xbfOne.\nTwo.\nThree.\nFour.\n",
+        ),
+    ],
+)
+def test_cli_line_ends_of_a_job_file_become_lf(
+    root: Path,
+    tmp_path: Path,
+    today: dt.date,
+    capsys: pytest.CaptureFixture[str],
+    data: bytes,
+    expected: bytes,
+) -> None:
+    # As the source: the source reads a job file in text mode, so CR LF and a
+    # lone CR become LF. (From stdin, the line ends stay: see above.)
+    job = tmp_path / "post.txt"
+    job.write_bytes(data)
+    assert _new_run(root, "--job", str(job)) == 0
+    run = Path(capsys.readouterr().out.strip())
+    assert (run / JOB).read_bytes() == expected
 
 
 def test_cli_new_run_json(
@@ -577,6 +650,33 @@ def test_cli_write_failure_exit_1(
     assert _new_run(root, "--job", str(job)) == 1
     err = capsys.readouterr().err
     assert "cannot write the run folder" in err and "Traceback" not in err
+
+
+class _FailingStdin:
+    """A stdin whose read fails with an OSError (for example a disk error)."""
+
+    class _Buffer:
+        def read(self) -> bytes:
+            raise OSError(5, "Input/output error")
+
+    buffer = _Buffer()
+
+
+def test_cli_stdin_read_failure_has_its_own_message(
+    root: Path,
+    today: dt.date,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("sys.stdin", _FailingStdin())
+    assert _new_run(root, "--job", "-") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "facts new-run: cannot read the job post from stdin: Input/output error. "
+        "Save the job post to a file and pass --job FILE.\n"
+    )
+    assert not (root / APPLICATIONS).exists()
 
 
 # facts new-run --url: not built before work item W-10

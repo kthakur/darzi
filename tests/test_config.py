@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
+import importlib
 import os
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 import pytest
@@ -140,7 +142,23 @@ def test_a_facts_toml_that_cannot_be_read_is_refused(
     with pytest.raises(InputError) as exc:
         load_config(tmp_path)
     path = tmp_path / FACTS_TOML
-    assert str(exc.value) == f"{path} cannot be read: Permission denied."
+    assert str(exc.value) == (
+        f"{path} cannot be read: Permission denied. "
+        "Check the permissions of the file and its folder."
+    )
+
+
+def test_a_facts_toml_that_cannot_be_tested_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # is_file() too raises an OSError, for example for a folder that the user
+    # cannot open.
+    def fail(*args: Any, **kwargs: Any) -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "is_file", fail)
+    with pytest.raises(InputError, match="cannot be read: Permission denied"):
+        load_config(tmp_path)
 
 
 def test_a_folder_named_facts_toml_gives_the_owner(tmp_path: Path) -> None:
@@ -162,54 +180,162 @@ def test_config_reads_no_environment_variable(
         assert word not in text
 
 
-class _NoEnvironment(dict[str, str]):
-    """An environment mapping that records each read and fails the test."""
+class _NoEnvironment(MutableMapping[Any, Any]):
+    """An environment mapping. Each access records its name and fails the test.
+
+    Each method of a mapping fails, also the methods that only make a view
+    (keys, items, values), the text forms (str, repr, format), the "|" operators,
+    copy and pickle. An attribute that the class does not have fails too.
+    """
 
     def __init__(self, reads: list[str]) -> None:
-        super().__init__()
-        self.reads = reads
+        object.__setattr__(self, "_reads", reads)
 
-    def _read(self, name: str) -> Any:
-        self.reads.append(name)
+    def _fail(self, name: str) -> NoReturn:
+        reads: list[str] = object.__getattribute__(self, "_reads")
+        reads.append(name)
         pytest.fail(f"load_config read the environment ({name})")
 
+    def __getattr__(self, name: str) -> Any:
+        self._fail(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self._fail("__setattr__")
+
     def __getitem__(self, key: Any) -> Any:
-        return self._read("__getitem__")
+        self._fail("__getitem__")
 
-    def __contains__(self, key: Any) -> bool:
-        return self._read("__contains__")
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._fail("__setitem__")
 
-    def __iter__(self) -> Any:
-        return self._read("__iter__")
+    def __delitem__(self, key: Any) -> None:
+        self._fail("__delitem__")
+
+    def __iter__(self) -> Iterator[Any]:
+        self._fail("__iter__")
 
     def __len__(self) -> int:
-        return self._read("__len__")
+        self._fail("__len__")
 
-    def get(self, *args: Any, **kwargs: Any) -> Any:
-        return self._read("get")
+    def __contains__(self, key: object) -> bool:
+        self._fail("__contains__")
 
-    def keys(self) -> Any:
-        return self._read("keys")
+    def __eq__(self, other: object) -> bool:
+        self._fail("__eq__")
 
-    def items(self) -> Any:
-        return self._read("items")
+    def __ne__(self, other: object) -> bool:
+        self._fail("__ne__")
 
-    def values(self) -> Any:
-        return self._read("values")
+    def __bool__(self) -> bool:
+        self._fail("__bool__")
+
+    def __repr__(self) -> str:
+        self._fail("__repr__")
+
+    def __str__(self) -> str:
+        self._fail("__str__")
+
+    def __format__(self, spec: str) -> str:
+        self._fail("__format__")
+
+    def __or__(self, other: Any) -> Any:
+        self._fail("__or__")
+
+    def __ror__(self, other: Any) -> Any:
+        self._fail("__ror__")
+
+    def __ior__(self, other: Any) -> Any:
+        self._fail("__ior__")
+
+    def __copy__(self) -> Any:
+        self._fail("__copy__")
+
+    def __deepcopy__(self, memo: Any) -> Any:
+        self._fail("__deepcopy__")
+
+    def __reduce__(self) -> Any:
+        self._fail("__reduce__")
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        self._fail("__reduce_ex__")
 
     def copy(self) -> Any:
-        return self._read("copy")
+        self._fail("copy")
+
+    def get(self, *args: Any, **kwargs: Any) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self._fail("get")
+
+    def keys(self) -> Any:
+        self._fail("keys")
+
+    def items(self) -> Any:
+        self._fail("items")
+
+    def values(self) -> Any:
+        self._fail("values")
+
+    def pop(self, *args: Any, **kwargs: Any) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self._fail("pop")
+
+    def popitem(self) -> Any:
+        self._fail("popitem")
+
+    def setdefault(self, *args: Any, **kwargs: Any) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self._fail("setdefault")
+
+    def update(self, *args: Any, **kwargs: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self._fail("update")
+
+    def clear(self) -> None:
+        self._fail("clear")
+
+
+def test_the_environment_trap_fails_on_each_kind_of_read() -> None:
+    # Proof that the trap below catches each read: each call fails the test
+    # (pytest.fail raises an exception that is not an Exception subclass).
+    reads: list[str] = []
+    trap = _NoEnvironment(reads)
+    calls: list[Any] = [
+        lambda: trap["HOME"],
+        lambda: trap.get("HOME"),
+        lambda: trap.pop("HOME", None),
+        lambda: trap.setdefault("HOME", "x"),
+        lambda: "HOME" in trap,
+        lambda: len(trap),
+        lambda: bool(trap),
+        lambda: list(trap),
+        lambda: trap.keys(),
+        lambda: trap.items(),
+        lambda: trap.values(),
+        lambda: dict(trap),
+        lambda: str(trap),
+        lambda: repr(trap),
+        lambda: f"{trap}",
+        lambda: trap | {},
+        lambda: {} | trap,
+        lambda: trap.copy(),
+        lambda: copy.copy(trap),
+        lambda: trap == {},
+        lambda: trap.encodekey,
+    ]
+    for call in calls:
+        with pytest.raises(pytest.fail.Exception):
+            call()
+    assert len(reads) >= len(calls)
 
 
 def test_config_does_not_read_the_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Each read of os.environ or os.environb fails the test. The context gives
-    # back the true environment before pytest uses it again.
+    # Each access to os.environ, os.environb or the low-level environ of the
+    # posix (or nt) module fails the test. The context gives back the true
+    # environment before pytest uses it again.
     reads: list[str] = []
+    low_level = importlib.import_module(os.name)
     with monkeypatch.context() as m:
         m.setattr(os, "environ", _NoEnvironment(reads))
-        m.setattr(os, "environb", _NoEnvironment(reads))
+        m.setattr(os, "environb", _NoEnvironment(reads), raising=False)
+        m.setattr(low_level, "environ", _NoEnvironment(reads))
         synthetic = load_config(DATA)
         empty = load_config(tmp_path)
         _write(tmp_path, "[owner]\nname = 'Test Person'\n")

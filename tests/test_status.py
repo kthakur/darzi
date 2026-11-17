@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import io
 import json
+import os
+import re
 import shutil
+import sys
+import time
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from darzi import cli
 from darzi.cli import main
@@ -70,14 +78,6 @@ def _status(root: Path, *extra: str) -> int:
     return main(["status", "--repo", str(root), *extra])
 
 
-def _tree(folder: Path) -> dict[str, bytes | None]:
-    """Return each file (with its content) and each folder (None) under `folder`."""
-    return {
-        str(p.relative_to(folder)): p.read_bytes() if p.is_file() else None
-        for p in folder.rglob("*")
-    }
-
-
 # The synthetic runs in tests/data
 
 
@@ -120,15 +120,72 @@ def test_each_synthetic_run_is_consistent() -> None:
         assert (folder / JOB).read_text(encoding="utf-8").strip()
 
 
-def test_status_writes_nothing(data_root: Path) -> None:
-    before = _tree(data_root)
-    assert _status(data_root) == 0
-    assert _status(data_root, "--json") == 0
-    assert _tree(data_root) == before
-    (data_root / APPLICATIONS / INITECH / RUN_YAML).unlink()
-    before = _tree(data_root)
-    assert _status(data_root) == 1
-    assert _tree(data_root) == before
+def test_the_synthetic_applications_folder_holds_only_the_three_runs() -> None:
+    # A stray write into the real tests/data (for example by status) fails here.
+    assert sorted(os.listdir(DATA)) == [
+        "answers.yaml",
+        "applications",
+        "facts.toml",
+        "master.yaml",
+        "questions.md",
+        "rules.yaml",
+        "selections",
+    ]
+    folder = DATA / APPLICATIONS
+    assert sorted(os.listdir(folder)) == [GLOBEX, INITECH, EXAMPLE_LABS]
+    for name in (GLOBEX, INITECH, EXAMPLE_LABS):
+        assert sorted(os.listdir(folder / name)) == [JOB, RUN_YAML]
+        assert (folder / name / JOB).is_file() and (folder / name / RUN_YAML).is_file()
+
+
+# The data root of test_status_writes_nothing. The test writes it from this fixed
+# content, so a file or a folder that an earlier test left in tests/data cannot
+# hide a write.
+FIXED_FOLDERS = [
+    "applications",
+    "applications/2026-10-20-acme-tester",
+    "applications/2026-10-21-acme-writer",
+]
+FIXED_FILES = {
+    "master.yaml": b"{}\n",
+    "applications/2026-10-20-acme-tester/job.md": b"Acme needs a tester.\n",
+    "applications/2026-10-20-acme-tester/run.yaml": (
+        b"schema_version: 1\ncompany: Acme\nrole: Tester\ncreated: '2026-10-20'\n"
+        b"type: null\nselection_hash: null\nstatus: new\n"
+    ),
+    # No run.yaml: status gives an error for this run.
+    "applications/2026-10-21-acme-writer/job.md": b"Acme needs a writer.\n",
+}
+
+
+def _snapshot(folder: Path) -> dict[str, bytes | None]:
+    """Return each file (with its content) and each folder (None) under `folder`."""
+    return {
+        p.relative_to(folder).as_posix(): p.read_bytes() if p.is_file() else None
+        for p in folder.rglob("*")
+    }
+
+
+def test_status_writes_nothing(tmp_path: Path) -> None:
+    root = tmp_path / "fixed"
+    for name in FIXED_FOLDERS:
+        (root / name).mkdir(parents=True)
+    for name, content in FIXED_FILES.items():
+        (root / name).write_bytes(content)
+    expected: dict[str, bytes | None] = {name: None for name in FIXED_FOLDERS}
+    expected.update(FIXED_FILES)
+    assert _snapshot(root) == expected
+    assert _status(root) == 1
+    assert _snapshot(root) == expected
+    assert _status(root, "--json") == 1
+    assert _snapshot(root) == expected
+    (root / "applications/2026-10-21-acme-writer/job.md").unlink()
+    (root / "applications/2026-10-21-acme-writer").rmdir()
+    del expected["applications/2026-10-21-acme-writer/job.md"]
+    del expected["applications/2026-10-21-acme-writer"]
+    assert _status(root) == 0
+    assert _status(root, "--json") == 0
+    assert _snapshot(root) == expected
 
 
 # No runs
@@ -307,13 +364,16 @@ def test_an_applications_folder_that_cannot_be_read(
 
     monkeypatch.setattr(Path, "iterdir", fail)
     folder = data_root / APPLICATIONS
+    message = (
+        f"{folder} cannot be read: Permission denied. "
+        "Check the permissions of the folder."
+    )
     with pytest.raises(InputError) as exc:
         list_runs(data_root)
-    assert str(exc.value) == f"{folder} cannot be read: Permission denied."
+    assert str(exc.value) == message
     assert _status(data_root) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    message = f"{folder} cannot be read: Permission denied."
     assert captured.err == f"facts status: {message}\n"
 
 
@@ -437,3 +497,351 @@ def test_status_lists_a_run_from_new_run(
         "status": "new",
     }
     assert rows[:-1] == EXPECTED_ROWS
+
+
+def test_one_run_is_counted_as_one_run(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in (GLOBEX, INITECH):
+        shutil.rmtree(data_root / APPLICATIONS / name)
+    assert _status(data_root) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "1 run."
+
+
+# One run folder that status cannot read gives one error finding. The other runs
+# still list, and no traceback comes out (N1 of the second review).
+
+NEW = "2026-10-20-acme-tester"  # sorts between INITECH and EXAMPLE_LABS
+GOOD = "created: '2026-10-20'\ncompany: Acme\nrole: Tester\ntype: ux\nstatus: new\n"
+GOOD_ROW: dict[str, str | None] = {
+    "date": "2026-10-20",
+    "company": "Acme",
+    "role": "Tester",
+    "type": "ux",
+    "status": "new",
+}
+NOT_ROOT = pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="a permission test needs a POSIX user that is not root",
+)
+
+
+def _add_run(root: Path, content: str) -> Path:
+    run = root / APPLICATIONS / NEW
+    run.mkdir()
+    (run / RUN_YAML).write_text(content, encoding="utf-8")
+    return run
+
+
+def _expect_one_error(
+    root: Path, capsys: pytest.CaptureFixture[str], message: str
+) -> None:
+    """Assert: the three good runs list, and NEW gives one error, text and JSON."""
+    assert _status(root) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    lines = captured.out.splitlines()
+    assert lines[:4] == EXPECTED_TEXT.splitlines()[:4]
+    assert len(lines) == 6
+    assert lines[4].startswith(f"error status {NEW}: ")
+    assert message in lines[4]
+    assert lines[5] == "3 runs."
+    assert _status(root, "--json") == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    assert report["ok"] is False
+    assert (report["errors"], report["warnings"]) == (1, 0)
+    assert report["runs"] == EXPECTED_ROWS
+    [finding] = report["findings"]
+    assert (finding["rule"], finding["severity"]) == ("status", "error")
+    assert finding["location"] == NEW
+    assert message in finding["message"] and "\n" not in finding["message"]
+
+
+def _expect_row(
+    root: Path,
+    capsys: pytest.CaptureFixture[str],
+    row: dict[str, str | None],
+    warnings: int = 0,
+) -> None:
+    """Assert: NEW gives the row `row` among the three good runs, text and JSON."""
+    assert _status(root) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    lines = captured.out.splitlines()
+    assert len(lines) == 6 + warnings and lines[-1] == "4 runs."
+    keys = ("date", "company", "role", "type", "status")
+    assert re.split(r" {2,}", lines[3].rstrip()) == [row[k] or "-" for k in keys]
+    assert _status(root, "--json") == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    assert (report["errors"], report["warnings"]) == (0, warnings)
+    assert report["runs"] == [*EXPECTED_ROWS[:2], {"run": NEW, **row}, EXPECTED_ROWS[2]]
+
+
+@contextlib.contextmanager
+def _mode(path: Path, mode: int) -> Generator[None]:
+    """Set the mode of `path`, and set it back so that pytest can remove it."""
+    old = path.stat().st_mode
+    path.chmod(mode)
+    try:
+        yield
+    finally:
+        path.chmod(old)
+
+
+# (a) A run folder that the user cannot open.
+
+DENIED = "cannot be read: Permission denied. Check the permissions"
+
+
+@NOT_ROOT
+def test_a_run_folder_with_no_permission_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _add_run(data_root, GOOD)
+    with _mode(run, 0):
+        with pytest.raises(PermissionError):
+            (run / RUN_YAML).is_file()
+        _expect_one_error(data_root, capsys, DENIED)
+
+
+@NOT_ROOT
+def test_a_run_yaml_with_no_permission_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _add_run(data_root, GOOD)
+    with _mode(run / RUN_YAML, 0):
+        _expect_one_error(data_root, capsys, DENIED)
+
+
+@NOT_ROOT
+def test_a_link_into_a_folder_with_no_permission_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Path.is_dir() raises PermissionError here. Before this round, that stopped
+    # the whole listing with exit code 2.
+    closed = data_root / "closed"
+    (closed / "inner").mkdir(parents=True)
+    link = data_root / APPLICATIONS / NEW
+    link.symlink_to(closed / "inner")
+    with _mode(closed, 0):
+        with pytest.raises(PermissionError):
+            link.is_dir()
+        _expect_one_error(data_root, capsys, DENIED)
+
+
+# (b) A value that the PyYAML constructors cannot read raises other classes than
+# YAMLError and ValueError.
+
+DEEP_LIST = "x: " + "[" * 1000 + "]" * 1000 + "\n"
+DEEP_MAP = "x: " + "{a: " * 1000 + "1" + "}" * 1000 + "\n"
+CANNOT_READ = "has a value that YAML cannot read. Fix the value, or put it in quotes."
+
+
+@pytest.mark.parametrize(
+    ("text", "error", "message"),
+    [
+        ("company: !!bool maybe\n", KeyError, CANNOT_READ),
+        ('company: !!int ""\n', IndexError, CANNOT_READ),
+        ('role: !!float ""\n', IndexError, CANNOT_READ),
+        ("created: !!timestamp abc\n", AttributeError, CANNOT_READ),
+        (DEEP_LIST, RecursionError, "nested too deep. Fix the YAML."),
+        (DEEP_MAP, RecursionError, "nested too deep. Fix the YAML."),
+        # A key that status does not show.
+        (GOOD + "notes: !!bool maybe\n", KeyError, CANNOT_READ),
+    ],
+    ids=["bool", "int", "float", "timestamp", "deep-list", "deep-map", "other-key"],
+)
+def test_a_value_that_yaml_cannot_read_is_an_error(
+    data_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    text: str,
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error):
+        yaml.safe_load(text)
+    _add_run(data_root, text)
+    _expect_one_error(data_root, capsys, message)
+
+
+# (c) An integer that Python cannot make into text (more than 4300 digits).
+
+BIG_INTEGERS = {
+    "hex": "0x" + "f" * 4000,
+    "binary": "0b" + "1" * 15000,
+    "octal": "0" + "7" * 5000,
+    "sexagesimal": "1" + ":30" * 3000,
+}
+
+
+def _not_text(root: Path, key: str) -> str:
+    path = root / APPLICATIONS / NEW / RUN_YAML
+    return f"The value of {key} in {path} is not text. Write it as text, in quotes."
+
+
+@pytest.mark.parametrize("key", ["created", "company", "role", "type", "status"])
+@pytest.mark.parametrize("form", list(BIG_INTEGERS))
+def test_an_integer_too_large_for_text_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str], key: str, form: str
+) -> None:
+    text = f"{key}: {BIG_INTEGERS[form]}\n"
+    value = yaml.safe_load(text)[key]
+    assert isinstance(value, int)
+    with pytest.raises(ValueError):
+        str(value)
+    _add_run(data_root, text)
+    _expect_one_error(data_root, capsys, _not_text(data_root, key))
+
+
+def test_a_long_decimal_integer_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # PyYAML itself raises a ValueError for this one.
+    _add_run(data_root, "company: " + "9" * 5000 + "\n")
+    _expect_one_error(data_root, capsys, "has a value that is not valid")
+
+
+# A value that is not text, a number, a date or None.
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("company: [Acme, Labs]\n", "company"),
+        ("company: {name: Acme}\n", "company"),
+        ("status: [new]\n", "status"),
+        ("type: !!binary QWNtZQ==\n", "type"),
+        ("role: !!set {a, b}\n", "role"),
+        ("role: !!omap [a: 1]\n", "role"),
+    ],
+    ids=["list", "mapping", "status-list", "binary", "set", "omap"],
+)
+def test_a_value_that_is_not_text_is_an_error(
+    data_root: Path, capsys: pytest.CaptureFixture[str], text: str, key: str
+) -> None:
+    _add_run(data_root, text)
+    _expect_one_error(data_root, capsys, _not_text(data_root, key))
+
+
+def _alias_yaml(key: str, depth: int = 8, width: int = 11) -> str:
+    """Return YAML in which `key` holds width**depth items, built from aliases.
+
+    The file is short. Before this round, the text of this value took about 10
+    seconds to make.
+    """
+    items = ", ".join(["x"] * width)
+    lines = [f"a0: &a0 [{items}]"]
+    for i in range(1, depth):
+        refs = ", ".join([f"*a{i - 1}"] * width)
+        lines.append(f"a{i}: &a{i} [{refs}]")
+    lines.append(f"{key}: *a{depth - 1}")
+    return "\n".join(lines) + "\n"
+
+
+def _seconds(root: Path, code: int, *extra: str) -> float:
+    start = time.monotonic()
+    assert _status(root, *extra) == code
+    return time.monotonic() - start
+
+
+def test_a_value_built_from_aliases_is_an_error_and_fast(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = _alias_yaml("company")
+    assert len(text) < 1000
+    _add_run(data_root, text)
+    assert _seconds(data_root, 1) < 2
+    assert _seconds(data_root, 1, "--json") < 2
+    capsys.readouterr()
+    _expect_one_error(data_root, capsys, _not_text(data_root, "company"))
+
+
+def test_a_value_built_from_aliases_in_another_key_gives_a_row_fast(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _add_run(data_root, _alias_yaml("notes") + GOOD)
+    assert _seconds(data_root, 0) < 2
+    assert _seconds(data_root, 0, "--json") < 2
+    capsys.readouterr()
+    _expect_row(data_root, capsys, GOOD_ROW)
+
+
+# Values and keys that give a correct row.
+
+
+@pytest.mark.parametrize(
+    ("text", "row"),
+    [
+        (
+            "created: '2026-10-20'\ncompany: .nan\nrole: .inf\ntype: -.inf\n"
+            "status: new\n",
+            {**GOOD_ROW, "company": "nan", "role": "inf", "type": "-inf"},
+        ),
+        (GOOD.replace("type: ux", "type: yes"), {**GOOD_ROW, "type": "True"}),
+        (GOOD.replace("type: ux", "type: 3.5"), {**GOOD_ROW, "type": "3.5"}),
+        (
+            GOOD.replace("'2026-10-20'", "2026-10-20T10:30:00+05:30"),
+            {**GOOD_ROW, "date": "2026-10-20T10:30:00+05:30"},
+        ),
+        ("1: one\n~: none\ntrue: yes\n2026-01-01: day\n3.5: x\n" + GOOD, GOOD_ROW),
+        (GOOD.replace("Acme", "A" * 100_000), {**GOOD_ROW, "company": "A" * 100_000}),
+    ],
+    ids=["nan-inf", "bool", "float", "datetime-with-zone", "keys-not-text", "long"],
+)
+def test_a_value_that_gives_a_row(
+    data_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    text: str,
+    row: dict[str, str | None],
+) -> None:
+    _add_run(data_root, text)
+    _expect_row(data_root, capsys, row)
+
+
+def test_a_top_level_list_reads_as_an_empty_mapping(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The "or {}" of the source readers: an empty file, and also a top-level [],
+    # reads as {}. Status then shows "-" values and a warning for the status.
+    _add_run(data_root, "[]\n")
+    empty: dict[str, str | None] = dict.fromkeys(GOOD_ROW)
+    _expect_row(data_root, capsys, empty, warnings=1)
+
+
+# A character that the encoding of stdout does not have.
+
+
+def _ascii_status(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *extra: str
+) -> tuple[int, str]:
+    """Run status with an ASCII stdout. Return the exit code and the output."""
+    buffer = io.BytesIO()
+    out = io.TextIOWrapper(buffer, encoding="ascii")
+    with monkeypatch.context() as m:
+        m.setattr(sys, "stdout", out)
+        code = _status(root, *extra)
+        out.flush()
+    return code, buffer.getvalue().decode("ascii")
+
+
+def test_text_that_stdout_cannot_encode_shows_as_a_question_mark(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_run(data_root, GOOD.replace("Acme", "Caf\u00e9 \u4e2d"))
+    (data_root / APPLICATIONS / "2026-10-21-caf\u00e9").mkdir()  # no run.yaml
+    code, out = _ascii_status(data_root, monkeypatch)
+    assert code == 1
+    lines = out.splitlines()
+    cells = ["2026-10-20", "Caf? ?", "Tester", "ux", "new"]
+    assert re.split(r" {2,}", lines[3].rstrip()) == cells
+    assert lines[5].startswith("error status 2026-10-21-caf?: ")
+    assert lines[6] == "4 runs."
+    code, out = _ascii_status(data_root, monkeypatch, "--json")
+    assert code == 1
+    report = json.loads(out)
+    assert report["runs"][2]["company"] == "Caf\u00e9 \u4e2d"
+    assert report["findings"][0]["location"] == "2026-10-21-caf\u00e9"

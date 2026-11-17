@@ -93,14 +93,19 @@ def load_meta(run_dir: Path) -> dict[str, Any]:
     one line.
     """
     path = run_dir / RUN_YAML
-    if not path.is_file():
-        raise InputError(f"{path} does not exist. Make the run with facts new-run.")
+    # Each file-system call is in the try: is_file() too raises an OSError, for
+    # example for a run folder that the user cannot open.
     try:
+        if not path.is_file():
+            raise InputError(f"{path} does not exist. Make the run with facts new-run.")
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise InputError(f"{path} is not UTF-8 text. Save it as UTF-8.") from exc
     except OSError as exc:
-        raise InputError(f"{path} cannot be read: {exc.strerror}.") from exc
+        raise InputError(
+            f"{path} cannot be read: {exc.strerror}. "
+            "Check the permissions of the file and its folder."
+        ) from exc
     try:
         meta: Any = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
@@ -115,6 +120,18 @@ def load_meta(run_dir: Path) -> dict[str, Any]:
         raise InputError(
             f"{path} has a value that is not valid, for example a date that "
             "does not exist. Fix the value, or put it in quotes."
+        ) from exc
+    except RecursionError as exc:
+        raise InputError(
+            f"{path} has lists or mappings that are nested too deep. Fix the YAML."
+        ) from exc
+    except Exception as exc:
+        # The PyYAML constructors raise other classes too for a bad value, for
+        # example KeyError for "!!bool maybe" and IndexError for '!!int ""'.
+        # This broad catch is for this one call only.
+        raise InputError(
+            f"{path} has a value that YAML cannot read. "
+            "Fix the value, or put it in quotes."
         ) from exc
     if not isinstance(meta, dict):
         raise InputError(f"{path} is not a mapping. Fix the YAML.")
