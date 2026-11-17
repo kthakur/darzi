@@ -61,6 +61,63 @@ def test_r8_position_title_and_dates_pass(base: dict[str, Any]) -> None:
     assert found(base) == []
 
 
+ALT_ONLY = "Interaction Designer"  # an alt title that is not a position title
+POSITION_ONLY = "Design Associate"  # a position title that is not an alt title
+
+
+def _acme_titles(*, alt: bool, positions: bool) -> dict[str, Any]:
+    """Return facts where the Acme alt title and position title differ (R-8)."""
+
+    def change(entries: dict[str, Any]) -> None:
+        acme = entries["acme"]
+        acme["alt_titles"] = [ALT_ONLY] if alt else []
+        acme["positions"][0]["title"] = POSITION_ONLY
+        if not positions:
+            del acme["positions"]
+
+    master = master_with(change)
+    acme = next(r for r in master["roles"] if r["id"] == "acme")
+    assert POSITION_ONLY not in acme["alt_titles"]
+    assert ALT_ONLY not in [p["title"] for p in acme.get("positions") or []]
+    return master
+
+
+def test_r8_alt_title_alone_passes(base: dict[str, Any]) -> None:
+    base["workExperience"][ACME]["title"] = ALT_ONLY
+    assert found(base, master=_acme_titles(alt=True, positions=True)) == []
+    assert found(base, master=_acme_titles(alt=False, positions=True)) == [
+        ("R-8", "workExperience[0].title")
+    ]
+
+
+def test_r8_position_title_alone_passes(base: dict[str, Any]) -> None:
+    base["workExperience"][ACME]["title"] = POSITION_ONLY
+    assert found(base, master=_acme_titles(alt=True, positions=True)) == []
+    assert found(base, master=_acme_titles(alt=True, positions=False)) == [
+        ("R-8", "workExperience[0].title")
+    ]
+
+
+def test_r8_credential_without_the_no_degree_suffix(base: dict[str, Any]) -> None:
+    """A credential that ends in "(no degree)" may show without those words."""
+    degree = base["education"][1]["degree"]
+    assert degree == "Coursework, Human-Computer Interaction"
+
+    def credential(suffix: str) -> dict[str, Any]:
+        return master_with(
+            lambda e: e["example-state-hci"].update(credential=f"{degree} {suffix}")
+        )
+
+    assert found(base, master=credential("(no degree)")) == []
+    base["education"][1]["degree"] = f"{degree} (no degree)"
+    assert found(base, master=credential("(no degree)")) == []
+    base["education"][1]["degree"] = degree
+    # Control: only this suffix may drop.
+    assert found(base, master=credential("(no diploma)")) == [
+        ("R-8", "education[1].degree")
+    ]
+
+
 def test_r8_project_alt_name_passes(base: dict[str, Any]) -> None:
     base["personalProjects"][0]["name"] = "Leafy"
     assert found(base) == []
@@ -139,6 +196,38 @@ def test_r10_same_dates_other_format(base: dict[str, Any], years: str) -> None:
 def test_r10_wrong_dates(base: dict[str, Any], years: str) -> None:
     base["workExperience"][GLOBEX]["years"] = years
     assert found(base) == [("R-10", "workExperience[1].years")]
+
+
+def test_r10_single_date_is_the_end_month_of_a_range(base: dict[str, Any]) -> None:
+    """One shown date passes only when the facts have one date."""
+    base["workExperience"][GLOBEX]["years"] = "Jan 2021"  # the end month alone
+    assert found(base) == [("R-10", "workExperience[1].years")]
+    base["workExperience"][GLOBEX]["years"] = "Feb 2019 - Jan 2021"
+    master = master_with(
+        lambda e: e["freelance-design"].update(start="2017-04", end="2017-04")
+    )
+    base["workExperience"][FREELANCE]["years"] = "Apr 2017"
+    assert found(base, master=master) == []
+    base["workExperience"][FREELANCE]["years"] = "May 2017"  # control
+    assert found(base, master=master) == [("R-10", "workExperience[2].years")]
+
+
+def test_r10_year_only_bounds_are_the_narrowest_span(base: dict[str, Any]) -> None:
+    """A year-only start is its last month; a year-only end is its first month.
+
+    The first period ends in Jan 2019 and the second period is Feb 2021. A start
+    in 2019 and an end in 2021 can be clear of both, so neither is an overlap.
+    """
+    master = master_with(lambda e: e["globex"].update(start="2019"))
+    base["workExperience"][GLOBEX]["years"] = "2019 - Jan 2021"
+    assert found(base, master=master) == []
+    master = master_with(lambda e: e["globex"].update(end="2021"))
+    base["workExperience"][GLOBEX]["years"] = "Feb 2019 - 2021"
+    assert found(base, master=master) == []
+    # Control: a year-only start in the first period is an overlap.
+    master = master_with(lambda e: e["globex"].update(start="2018"))
+    base["workExperience"][GLOBEX]["years"] = "2018 - Jan 2021"
+    assert found(base, master=master) == [("R-10", "workExperience[1]")]
 
 
 def test_r10_overlap(base: dict[str, Any]) -> None:

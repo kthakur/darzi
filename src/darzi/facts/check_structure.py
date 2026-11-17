@@ -220,7 +220,7 @@ def r9_employer(ctx: Context) -> list[Finding]:
 
 
 def _parse_years(text: str) -> list[str] | None:
-    """Parse 'Nov 2017 - Jul 2018', '1998 - 2001', 'Apr 2025' or '... - Present'."""
+    """Parse 'Mar 2014 - Sep 2016', '2003 - 2005', 'Jun 2022' or '... - Present'."""
     tokens: list[str] = []
     for part in re.split(r"\s+(?:-|\u2013|\u2014|to)\s+", text.strip()):
         part = part.strip()

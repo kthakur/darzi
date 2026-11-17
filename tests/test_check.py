@@ -187,6 +187,20 @@ def test_r4_pronoun_in_summary(base: dict[str, Any]) -> None:
     assert found(base) == [("R-4", "summary")]
 
 
+def test_r4_allowed_in_names_a_kind(base: dict[str, Any]) -> None:
+    """A kind in allowed_in may use a pronoun; the other kinds still may not."""
+    rules = copy.deepcopy(RULES)
+    rules["pronouns"]["allowed_in"] = ["summary"]
+    base["summary"] = "My work turns ideas into tools."
+    assert found(base, rules=rules) == []
+    base["workExperience"][ACME]["description"][0] = (
+        "I designed a new checkout flow that cut drop-off by 12%."
+    )
+    assert found(base, only="R-4", rules=rules) == [
+        ("R-4", "workExperience[0].description[0]")
+    ]
+
+
 # R-5 education and credentials
 
 
@@ -236,6 +250,19 @@ def test_r5_credential_wording_passes(base: dict[str, Any], skill: str) -> None:
     assert [r for r, _ in found(base)] == ["R-19"]
 
 
+def test_r5_credential_with_no_allowed_wording(base: dict[str, Any]) -> None:
+    """With an empty allowed list, the advice is to remove the word."""
+    rules = copy.deepcopy(RULES)
+    rules["credential_wording"]["items"].append(
+        {"term": "license", "forbidden": ["licensed"], "allowed": []}
+    )
+    base["summary"] = "Licensed product designer."
+    assert found(base, rules=rules) == [("R-5", "summary")]
+    (finding,) = [f for f in findings(base, rules=rules) if f.rule == "R-5"]
+    assert finding.message.endswith("Remove it.")
+    assert found(base) == []  # control: the synthetic rules have no such item
+
+
 # R-6 removed and doubtful items
 
 
@@ -260,12 +287,53 @@ def test_r6_word_boundaries(base: dict[str, Any]) -> None:
     ]
 
 
+def test_r6_skips_the_contact_data(base: dict[str, Any]) -> None:
+    """R-6 does not read the email and phone; R-1 checks them."""
+    rules = copy.deepcopy(RULES)
+    rules["doubtful_items"]["terms"].append("555-0100")
+    assert base["personalInfo"]["phone"] == "555-0100"
+    assert found(base, rules=rules) == []
+    assert found(base, "Call 555-0100.", only="R-6", rules=rules) == [
+        ("R-6", "cover_letter.md:1")
+    ]
+
+
 # R-7 inflation
 
 
 def test_r7_summary_claim(base: dict[str, Any]) -> None:
     base["summary"] = "Led the design team at Acme."
     assert found(base) == [("R-7", "summary")]
+
+
+def _inflation(*, terms: bool, regex: bool) -> dict[str, Any]:
+    rules = copy.deepcopy(RULES)
+    entry = rules["inflation_phrases"]
+    if not terms:
+        entry["terms"] = []
+    if not regex:
+        del entry["regex"]
+    return rules
+
+
+def test_r7_term_alone_finds_it(base: dict[str, Any]) -> None:
+    """No regex matches this text; only the term "head of" finds it."""
+    base["summary"] = "Head of research at Acme."
+    assert found(base) == [("R-7", "summary")]
+    assert found(base, rules=_inflation(terms=True, regex=False)) == [
+        ("R-7", "summary")
+    ]
+    assert found(base, rules=_inflation(terms=False, regex=True)) == []
+
+
+def test_r7_regex_alone_finds_it(base: dict[str, Any]) -> None:
+    """No term matches this text; only the regex finds it."""
+    base["summary"] = "Led a small research team at Acme."
+    assert found(base) == [("R-7", "summary")]
+    assert found(base, rules=_inflation(terms=False, regex=True)) == [
+        ("R-7", "summary")
+    ]
+    assert found(base, rules=_inflation(terms=True, regex=False)) == []
 
 
 LEAD = "Led the checkout team of four."
@@ -376,9 +444,28 @@ def test_missing_nested_rule_key_is_input_error(
         findings(tailored(), rules=rules)
 
 
-def test_rules_that_are_not_a_mapping() -> None:
-    with pytest.raises(InputError, match="rules.yaml has no rule entries"):
-        require_keys(None, BASE_MAP)  # an empty rules.yaml
+@pytest.mark.parametrize("rules", [None, ["titles"]])
+def test_rules_that_are_not_a_mapping(rules: Any) -> None:
+    """An empty rules.yaml, or a list: the message says what to add."""
+    with pytest.raises(InputError) as caught:
+        require_keys(rules, BASE_MAP)
+    assert str(caught.value) == (
+        "rules.yaml has no rule entries. Add the rule entries to rules.yaml, "
+        "each one a mapping with id and severity."
+    )
+
+
+@pytest.mark.parametrize("value", [None, "R-8", ["R-8", "error"]])
+def test_rule_entry_that_is_not_a_mapping(value: Any) -> None:
+    """The entry is there, so the message must not say that it is absent."""
+    rules = copy.deepcopy(RULES)
+    rules["titles"] = value
+    with pytest.raises(InputError) as caught:
+        findings(tailored(), rules=rules)
+    assert str(caught.value) == (
+        "rules.yaml: titles is not a mapping. Write it as a mapping with id and "
+        "severity."
+    )
 
 
 def _other_rule_keys() -> list[tuple[str, str]]:

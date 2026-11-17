@@ -154,11 +154,19 @@ def require_keys(rules: Any, the_map: dict[str, Any]) -> None:
     stops `facts check` with a traceback. The message names the key and the fix.
     """
     if not isinstance(rules, dict):
-        raise InputError(f"rules.yaml has no rule entries. {RULES_FIX}")
+        raise InputError(
+            "rules.yaml has no rule entries. Add the rule entries to rules.yaml, "
+            "each one a mapping with id and severity."
+        )
     for name, keys in RULE_KEYS.items():
-        entry = rules.get(name)
-        if not isinstance(entry, dict):
+        if name not in rules:
             raise InputError(f"rules.yaml has no entry {name}. {RULES_FIX}")
+        entry = rules[name]
+        if not isinstance(entry, dict):
+            raise InputError(
+                f"rules.yaml: {name} is not a mapping. Write it as a mapping "
+                "with id and severity."
+            )
         for key in ("id", "severity", *keys):
             if key not in entry:
                 raise InputError(f"rules.yaml: {name} has no key {key}. {RULES_FIX}")

@@ -13,7 +13,7 @@ from darzi.facts.check_provenance import (
     unsupported,
 )
 
-from .checking import ACME, MASTER, RULES, findings, found, tailored
+from .checking import ACME, MASTER, RULES, findings, found, master_with, tailored
 
 
 @pytest.fixture
@@ -79,6 +79,19 @@ def test_public_corpus_leaves_out_private_text() -> None:
     master = copy.deepcopy(MASTER)
     master["roles"][0]["bullets"][0]["exclude_from"] = ["all"]
     assert "checkout flow" not in public_corpus(master)
+
+
+def test_public_corpus_leaves_out_an_entry_excluded_for_all() -> None:
+    vandelay = next(r for r in MASTER["roles"] if r["id"] == "vandelay")
+    assert vandelay["exclude_from"] == ["corporate-tech"]
+    corpus = public_corpus(MASTER)  # an exclusion for one job type keeps it
+    assert "Vandelay Industries" in corpus
+    assert "Answered customer tickets" in corpus
+    master = master_with(lambda e: e["vandelay"].update(exclude_from=["all"]))
+    corpus = public_corpus(master)
+    assert "Vandelay Industries" not in corpus
+    assert "Answered customer tickets" not in corpus
+    assert "Acme Corporation" in corpus  # control: the other entries stay
 
 
 def test_threshold_comes_from_rules(base: dict[str, Any]) -> None:
