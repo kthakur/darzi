@@ -256,7 +256,7 @@ def test_a_bad_yaml_finding_shows_no_line_of_the_file(
 
 # A line end in a folder name cannot start a false line (S1 of the review).
 
-FAKE_ROW = "2026-12-31  Evil Corp  Fake Role  ux  submitted"
+FAKE_ROW = "2026-12-31  Fake Co  Fake Role  ux  submitted"
 
 
 def test_a_line_end_in_a_folder_name_of_an_error_stays_on_one_line(
