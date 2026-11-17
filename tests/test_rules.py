@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import yaml
 
+from darzi.facts.check_structure import _bounds  # pyright: ignore[reportPrivateUsage]
 from darzi.facts.patterns import find_regex, find_terms
 from darzi.facts.repo import load_master, load_rules
 from darzi.facts.rules import rule_entries, validate_rules
@@ -252,6 +253,40 @@ def _assert_periods_ordered(periods: list[dict[str, Any]]) -> None:
 
 def test_not_working_periods_are_ordered(rules: dict[str, Any]) -> None:
     _assert_periods_ordered(rules["not_working_periods"]["periods"])
+
+
+def _overlaps(master: dict[str, Any], rules: dict[str, Any]) -> list[str]:
+    """Return the id of each role that overlaps a not-working period (R-10)."""
+    overlaps: list[str] = []
+    for role in master["roles"]:
+        if not role["start"]:
+            continue
+        lo = _bounds(role["start"], low=False)
+        hi = _bounds(role["end"] or role["start"], low=True)
+        for period in rules["not_working_periods"]["periods"]:
+            if lo <= _bounds(period["to"], low=False) and hi >= _bounds(
+                period["from"], low=True
+            ):
+                overlaps.append(role["id"])
+    return overlaps
+
+
+def test_no_role_overlaps_a_not_working_period(
+    rules: dict[str, Any], master: dict[str, Any]
+) -> None:
+    assert len(rules["not_working_periods"]["periods"]) == 2
+    assert _overlaps(master, rules) == []
+
+
+def test_overlap_check_can_fail(rules: dict[str, Any], master: dict[str, Any]) -> None:
+    """Control: a role that ends in the second period overlaps it."""
+    changed = copy.deepcopy(master)
+    (globex,) = [r for r in changed["roles"] if r["id"] == "globex"]
+    globex["end"] = "2021-02"
+    assert _overlaps(changed, rules) == ["globex"]
+    globex["end"] = "2021-01"
+    globex["start"] = "2018"
+    assert _overlaps(changed, rules) == ["globex"]
 
 
 LATER = {"from": "2020-03", "to": "2020-06", "source": "confirmed"}

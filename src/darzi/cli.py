@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from darzi import __version__
-from darzi.facts.check import BASE, BASE_MAP
+from darzi.facts.check import BASE, BASE_MAP, CHECK_REPORT, check, load_run
 from darzi.facts.check_meta import load_open_questions
 from darzi.facts.export import export
 from darzi.facts.public import privacy_findings, public_copy, query
@@ -34,7 +34,6 @@ JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "check": "W-3",
     "new-run": "W-4",
     "status": "W-4",
     "approve": "W-5",
@@ -66,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         "validate", parents=[common], help="check master.yaml and rules.yaml"
     )
     sub.add_parser("public", parents=[common], help="print the public copy as JSON")
+    check_cmd = sub.add_parser(
+        "check", parents=[common], help="check a run folder or a selection"
+    )
+    check_cmd.add_argument(
+        "run", type=Path, help="run folder with tailored.json, or a selection file"
+    )
     query_cmd = sub.add_parser(
         "query", parents=[common], help="find public bullets by tags and text"
     )
@@ -93,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if command == "validate":
         return _validate(args.repo, args.json)
+    if command == "check":
+        return _check(args.run, args.repo, args.json)
     if command == "export":
         return _export(args.selection, args.run, args.repo, args.json)
     if command == "public":
@@ -118,6 +125,48 @@ def _validate(repo_arg: Path | None, as_json: bool) -> int:
         return 2
     _report("validate", repo, findings, as_json)
     return 1 if any(f.severity == "error" for f in findings) else 0
+
+
+def _check(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    if run.is_file():
+        return _check_selection(run, repo_arg, as_json)
+    # Invalid input gives exit code 2 and writes no check.json. This includes a
+    # rules.yaml or base.map.json that lacks a key that the rules read.
+    try:
+        repo = find_repo(repo_arg)
+        findings = check(
+            load_run(run),
+            load_rules(repo),
+            load_master(repo),
+            load_open_questions(repo),
+        )
+    except InputError as exc:
+        print(f"facts check: {exc}", file=sys.stderr)
+        return 2
+    report = _report_data("check", run, findings)
+    (run / CHECK_REPORT).write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+    _print(report, findings, as_json, str(run))
+    return 1 if report["errors"] else 0
+
+
+def _check_selection(path: Path, repo_arg: Path | None, as_json: bool) -> int:
+    try:
+        repo = find_repo(repo_arg)
+        selection = load_selection(path)
+        master = load_master(repo)
+        rules = load_rules(repo)
+        questions = load_open_questions(repo)
+    except InputError as exc:
+        print(f"facts check: {exc}", file=sys.stderr)
+        return 2
+    findings = check_selection(
+        selection, load_schema(SELECTION), master, rules, questions
+    )
+    report = _report_data("check", path, findings)
+    _print(report, findings, as_json, str(path))
+    return 1 if report["errors"] else 0
 
 
 def _export(path: Path, run: Path, repo_arg: Path | None, as_json: bool) -> int:

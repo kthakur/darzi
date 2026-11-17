@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -276,8 +277,8 @@ def test_export_projects_and_education(selection: dict[str, Any]) -> None:
         {
             "id": 2,
             "institution": "Example State University",
-            "degree": "Human-Computer Interaction",
-            "years": "2020-09 - 2021",
+            "degree": "Coursework, Human-Computer Interaction",
+            "years": "2020 - 2021",
         },
     ]
     assert [m["section"] for m in base_map["entries"]] == (
@@ -375,6 +376,51 @@ def test_cli_export_writes_base_and_map(
         public_copy(MASTER, RULES), selection, f"selections/{path.name}", RULES
     )
     assert "facts export: wrote" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", [UX, CORPORATE])
+def test_exported_base_passes_facts_check(
+    tmp_path: Path, path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The base, copied to tailored.json with no change, has no error."""
+    run = tmp_path / "run"
+    assert _export(path, run, DATA) == 0
+    shutil.copy(run / "base.json", run / "tailored.json")
+    capsys.readouterr()
+    assert main(["check", str(run), "--repo", str(DATA)]) == 0
+    report = json.loads((run / "check.json").read_text(encoding="utf-8"))
+    assert report["ok"] is True and report["errors"] == 0
+    assert {f["rule"] for f in report["findings"]} == {"R-16"}  # warnings only
+    assert f"{run}: 0 errors, {report['warnings']} warnings." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", [UX, CORPORATE])
+def test_cli_check_selection_passes(
+    path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["check", str(path), "--repo", str(DATA)]) == 0
+    assert f"{path}: 0 errors, 0 warnings." in capsys.readouterr().out
+
+
+def test_cli_check_selection_errors_exit_1(
+    tmp_path: Path, selection: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    selection["skills"].append("Not a skill")
+    path = _write(tmp_path, selection)
+    assert main(["check", str(path), "--repo", str(DATA), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["command"] == "check" and report["errors"] == 1
+    assert [f["rule"] for f in report["findings"]] == ["D-21"]
+    assert not (tmp_path / "check.json").exists()
+
+
+def test_cli_check_selection_bad_yaml_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "ux.yaml"
+    path.write_text("work: [unclosed\n", encoding="utf-8")
+    assert main(["check", str(path), "--repo", str(DATA)]) == 2
+    assert "not valid YAML" in capsys.readouterr().err
 
 
 def test_cli_export_refuses_selection_errors(

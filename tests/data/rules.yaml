@@ -102,6 +102,7 @@ education_forbidden:
   reason: The owner did not complete a master's degree.
   terms: [master's degree, M.S., M.A., MS in, MA in]
   coursework_label: Coursework
+  coursework_ids: [example-state-hci]
 
 credential_wording:
   id: R-5
@@ -148,6 +149,9 @@ not_working_periods:
   periods:
     - from: 2018-01
       to: 2019-01
+      source: confirmed
+    - from: 2021-02
+      to: 2021-02
       source: confirmed
 
 exclude_from:
