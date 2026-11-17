@@ -1,6 +1,6 @@
 """Text matching for rules (D-13): word boundaries, case ignored.
 
-A plain substring check finds "RAG" inside "Dragon". Here a term matches only
+A plain substring check finds "QWEX" inside "Aqwexon". Here a term matches only
 when no letter, digit or underscore touches either end, so terms that start or
 end with a symbol ("C#", ".NET", "Node.js", "+1 ...") also work.
 """
@@ -36,7 +36,7 @@ def term_regex(term: str) -> re.Pattern[str]:
 def find_terms(text: str, terms: Iterable[str]) -> list[Match]:
     """Return every match of any term in `text`, in text order.
 
-    When two matches overlap ("RAG" inside "RAG systems"), only the longer one stays.
+    When two matches overlap ("QWEX" inside "QWEX systems"), only the longer one stays.
     """
     found: list[Match] = []
     for term in terms:

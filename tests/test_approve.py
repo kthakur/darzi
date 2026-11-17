@@ -11,12 +11,12 @@ from darzi.runs.approve import safe
 @pytest.mark.parametrize(
     "hidden",
     [
-        "️",  # variation selector
+        "\ufe0f",  # variation selector
         "\U000e0100",  # variation selector supplement
-        "ㅤ",  # Hangul filler
-        "⠀",  # braille blank
-        "​",  # zero-width space
-        "‮",  # right-to-left override
+        "\u3164",  # Hangul filler
+        "\u2800",  # braille blank
+        "\u200b",  # zero-width space
+        "\u202e",  # right-to-left override
         "\U000e0041",  # tag character
         "\U0010ffff",  # not assigned
         "\x1b",  # escape
@@ -28,5 +28,6 @@ def test_safe_replaces_hidden_characters(hidden: str) -> None:
 
 
 def test_safe_keeps_normal_text() -> None:
-    text = "Café – “quoted” 40% $5 naïve\tok\nnext"
+    # Visible non-ASCII: e acute, en dash, curly quotes, i diaeresis.
+    text = "Caf\u00e9 \u2013 \u201cquoted\u201d 40% $5 na\u00efve\tok\nnext"
     assert safe(text) == text

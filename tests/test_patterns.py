@@ -8,10 +8,10 @@ from darzi.facts.patterns import find_regex, find_terms, term_regex
 @pytest.mark.parametrize(
     ("term", "text", "hit"),
     [
-        ("RAG", "Made a RAG search tool", True),
-        ("RAG", "Dragon Fruit Stand", False),
-        ("RAG", "rag-based search", True),
-        ("RAG", "RAGs", False),
+        ("QWEX", "Made a QWEX search tool", True),
+        ("QWEX", "Aqwexon Fruit Stand", False),
+        ("QWEX", "qwex-based search", True),
+        ("QWEX", "QWEXs", False),
         ("headed", "Headed the studio", True),
         ("headed", "a two-headed plan", True),  # a hyphen is a boundary
         ("headed", "forwardheaded", False),

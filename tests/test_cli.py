@@ -217,9 +217,9 @@ def test_report_hides_invisible_characters(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A finding cannot put a terminal code or a direction mark on the screen."""
-    master["roles"][0]["id"] = "acme‮\x1b[2J"
+    master["roles"][0]["id"] = "acme\u202e\x1b[2J"
     repo = make_repo(master)
     assert main(["validate", "--repo", str(repo)]) == 1
     out = capsys.readouterr().out
-    assert "‮" not in out and "\x1b" not in out
+    assert "\u202e" not in out and "\x1b" not in out
     assert "error D-2 roles[acme??[2J].id:" in out
