@@ -9,6 +9,7 @@ fake page counter, the real Word builder and the real round-trip check.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import datetime as dt
 import fcntl
@@ -17,7 +18,8 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,7 +52,7 @@ from darzi.runs.signing import record_bytes, run_target
 from .pdf_fakes import pdf_bytes
 from .render_fakes import FakeCli, fake_install, fake_renderer
 from .resume_pdf import pdf_lines
-from .signing_root import approve, make_key, sign_bytes, signed_copy
+from .signing_root import SIGNER, approve, make_key, sign_bytes, signed_copy
 
 RUN = "2026-11-17-acme-product-designer"
 DAY = dt.date(2026, 11, 18)
@@ -134,10 +136,13 @@ def _finalize(
     *,
     office: bool = True,
     count: Callable[[Path], int] = lambda _path: 1,
+    repo: Path | None = None,
 ) -> Finalized:
-    renderer = _renderer(run, cli or PdfCli())
+    root = repo or run.parents[1]
+    install = fake_install(Path(tempfile.mkdtemp(dir=root.parent)))
+    renderer = ResumeMatcher(install, cli or PdfCli())
     return finalize(
-        run.parents[1],
+        root,
         run,
         renderer_for=lambda _repo, _render: renderer,
         count_pages=count,
@@ -527,6 +532,136 @@ def test_a_symbolic_link_is_refused(run_dir: Path, tmp_path: Path, name: str) ->
     assert _tree(outside) == before
 
 
+# --- The read, the hash confirmation and a name of the wrong kind -------------
+
+
+def test_finalize_reads_each_input_one_time(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loads: list[Path] = []
+    real_load = finalize_module.load_run
+
+    def load_run_counted(run: Path) -> Any:
+        loads.append(run)
+        return real_load(run)
+
+    reads: Counter[str] = Counter()
+    read_text, read_bytes = Path.read_text, Path.read_bytes
+
+    def on_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        reads[self.name] += 1
+        return read_text(self, *args, **kwargs)
+
+    def on_read_bytes(self: Path) -> bytes:
+        reads[self.name] += 1
+        return read_bytes(self)
+
+    monkeypatch.setattr(finalize_module, "load_run", load_run_counted)
+    monkeypatch.setattr(Path, "read_text", on_read_text)
+    monkeypatch.setattr(Path, "read_bytes", on_read_bytes)
+    _finalize(run_dir)
+    assert loads == [run_dir]
+    assert reads["tailored.json"] == 1
+    assert reads["cover_letter.md"] == 1
+
+
+def test_a_file_in_out_that_changes_after_the_swap(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename = os.rename
+
+    def on_rename(src: Any, dst: Any) -> None:
+        rename(src, dst)
+        if Path(src).name == ".finalize-new":
+            with (Path(dst) / NAMES[1]).open("ab") as f:
+                f.write(b"changed")
+
+    monkeypatch.setattr(os, "rename", on_rename)
+    with pytest.raises(Refused, match="changed during finalize"):
+        _finalize(run_dir)
+    assert not (run_dir / "manifest.json").exists()
+    assert _status(run_dir) == "new"
+
+
+@pytest.mark.parametrize(
+    "name", ["manifest.json", "out", ".finalize-new", ".finalize-old"]
+)
+def test_a_name_of_the_wrong_kind_is_refused(run_dir: Path, name: str) -> None:
+    path = run_dir / name
+    if name == "manifest.json":
+        path.mkdir()
+        (path / "notes.txt").write_text("by hand\n", encoding="utf-8")
+    else:
+        path.write_text("not a folder\n", encoding="utf-8")
+    cli = PdfCli()
+    info = _refused(run_dir, InputError, match="is not a (file|folder)", cli=cli)
+    assert type(info.value) is InputError
+    assert cli.calls == []
+
+
+# --- The run folder belongs to the data root ----------------------------------
+
+
+def _signed_by_a_second_root(tmp_path: Path, run: Path) -> Path:
+    """Sign a record of `run` with the key of a new data root; return that root."""
+    root2 = signed_copy(tmp_path / "second")
+    key2 = tmp_path / "second" / "keys" / "approval_key"
+    loaded = load_run(run)
+    digest = content_hash(loaded.tailored, loaded.letter)
+    data = record_bytes("run", run_target(run), DAY, digest, SIGNER)
+    sign_bytes(key2, run / "approval.json", data)
+    # The key list of root 2 accepts the record: only the binding refuses it.
+    assert run_is_approved(root2, load_config(root2).approval, run, loaded).approved
+    return root2
+
+
+def test_a_run_of_another_data_root(tmp_path: Path) -> None:
+    run = _make_run(tmp_path)
+    root1 = run.parents[1]
+    root2 = _signed_by_a_second_root(tmp_path, run)
+    before = (_tree(root1), _tree(root2))
+    cli = PdfCli()
+    with pytest.raises(InputError, match="not a run folder of the data root") as info:
+        _finalize(run, cli, repo=root2)
+    assert type(info.value) is InputError
+    assert (_tree(root1), _tree(root2)) == before
+    assert cli.calls == []
+
+
+def _copy_in_sub(run: Path, tmp_path: Path) -> Path:
+    deeper = run.parent / "sub" / run.name
+    shutil.copytree(run, deeper)
+    return deeper
+
+
+def _link_to_run(run: Path, tmp_path: Path) -> Path:
+    link = run.with_name("2026-11-17-acme-alias")
+    link.symlink_to(run)
+    return link
+
+
+def _path_through_a_link(run: Path, tmp_path: Path) -> Path:
+    elsewhere = tmp_path / "elsewhere"
+    shutil.copytree(run, elsewhere / run.name)
+    (run.parent / "nested").symlink_to(elsewhere)
+    return run.parent / "nested" / run.name
+
+
+@pytest.mark.parametrize("place", [_copy_in_sub, _link_to_run, _path_through_a_link])
+def test_a_run_folder_that_is_not_a_child_of_applications(
+    run_dir: Path, tmp_path: Path, place: Callable[[Path, Path], Path]
+) -> None:
+    root = run_dir.parents[1]
+    target = place(run_dir, tmp_path)
+    before = _tree(root)
+    cli = PdfCli()
+    info = _refused(target, InputError, match="not a run folder", cli=cli, repo=root)
+    assert type(info.value) is InputError
+    assert _tree(root) == before
+    assert cli.calls == []
+    assert not (run_dir / "manifest.json").exists()
+
+
 # --- The command --------------------------------------------------------------
 
 
@@ -602,6 +737,144 @@ def test_the_command_exit_code_2(
     (run / "run.yaml").unlink()
     assert _cli(run) == 2
     assert "run.yaml" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("from_inside", [False, True])
+def test_the_command_refuses_a_run_of_another_data_root(
+    tmp_path: Path,
+    fake_tools: PdfCli,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    from_inside: bool,
+) -> None:
+    run = _make_run(tmp_path)
+    root1 = run.parents[1]
+    root2 = _signed_by_a_second_root(tmp_path, run)
+    before = (_tree(root1), _tree(root2))
+    if from_inside:
+        monkeypatch.chdir(root2)
+        assert main(["finalize", str(run)]) == 2
+    else:
+        assert main(["finalize", str(run), "--repo", str(root2)]) == 2
+    assert "not a run folder of the data root" in capsys.readouterr().err
+    assert (_tree(root1), _tree(root2)) == before
+    assert fake_tools.calls == []
+
+
+def test_the_command_with_a_dot_inside_the_run_folder(
+    run_dir: Path, fake_tools: PdfCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(run_dir)
+    assert main(["finalize", ".", "--repo", str(run_dir.parents[1])]) == 0
+    manifest = _manifest(run_dir)
+    assert manifest["run"] == RUN
+    for item in manifest["files"]:
+        assert item["sha256"] == _sha(run_dir / item["path"])
+    assert _status(run_dir) == "finalized"
+
+
+def _names(folder: Path) -> list[str] | None:
+    return sorted(p.name for p in folder.iterdir()) if folder.exists() else None
+
+
+OLD_OUT = sorted([*NAMES, "old.txt"])
+
+
+@contextlib.contextmanager
+def _fault(step: str) -> Generator[None]:
+    """Make one commit step of finalize raise an OSError."""
+    unlink, rename, replace, rmtree = Path.unlink, os.rename, os.replace, shutil.rmtree
+
+    def on_unlink(self: Path, missing_ok: bool = False) -> None:
+        if step == "unlink" and self.name == "manifest.json":
+            raise PermissionError("synthetic fault")
+        unlink(self, missing_ok=missing_ok)
+
+    def on_rename(src: Any, dst: Any) -> None:
+        if (step == "out-to-old" and Path(dst).name == ".finalize-old") or (
+            step == "new-to-out" and Path(src).name == ".finalize-new"
+        ):
+            raise PermissionError("synthetic fault")
+        rename(src, dst)
+
+    def on_rmtree(path: Any) -> None:
+        if step == "remove-old" and Path(path).name == ".finalize-old":
+            raise PermissionError("synthetic fault")
+        rmtree(path)
+
+    def on_replace(src: Any, dst: Any) -> None:
+        if f"write-{Path(dst).name}" == step:
+            raise PermissionError("synthetic fault")
+        replace(src, dst)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "unlink", on_unlink)
+        patch.setattr(os, "rename", on_rename)
+        patch.setattr(shutil, "rmtree", on_rmtree)
+        patch.setattr(os, "replace", on_replace)
+        yield
+
+
+@pytest.mark.parametrize(
+    ("step", "manifest", "out", "new", "old"),
+    [
+        ("out-to-old", False, OLD_OUT, NAMES, None),
+        ("new-to-out", False, None, NAMES, OLD_OUT),
+        ("remove-old", False, NAMES, None, OLD_OUT),
+        ("write-manifest.json", False, NAMES, None, None),
+        ("write-run.yaml", True, NAMES, None, None),
+    ],
+)
+def test_a_failed_commit_step_after_the_swap_started(
+    run_dir: Path,
+    fake_tools: PdfCli,
+    capsys: pytest.CaptureFixture[str],
+    step: str,
+    manifest: bool,
+    out: list[str] | None,
+    new: list[str] | None,
+    old: list[str] | None,
+) -> None:
+    assert _cli(run_dir) == 0
+    (run_dir / "out" / "old.txt").write_text("old\n", encoding="utf-8")
+    (run_dir / "run.yaml").write_text(RUN_YAML, encoding="utf-8")
+    skip = ("out", "manifest.json", ".finalize-new", ".finalize-old")
+    others = {p.name: p.read_bytes() for p in run_dir.iterdir() if p.name not in skip}
+    capsys.readouterr()
+    with _fault(step):
+        assert _cli(run_dir) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "synthetic fault" in err
+    assert "repair the run" in err
+    assert (run_dir / "manifest.json").is_file() == manifest
+    assert _names(run_dir / "out") == out
+    assert _names(run_dir / ".finalize-new") == new
+    assert _names(run_dir / ".finalize-old") == old
+    rest = {p.name: p.read_bytes() for p in run_dir.iterdir() if p.name not in skip}
+    assert rest == others  # run.yaml keeps the status new; no temporary file.
+    if manifest:
+        for item in _manifest(run_dir)["files"]:
+            assert item["sha256"] == _sha(run_dir / item["path"])
+    # A new finalize repairs the run.
+    assert _cli(run_dir) == 0
+    assert _names(run_dir / "out") == NAMES
+    assert not (run_dir / ".finalize-new").exists()
+    assert not (run_dir / ".finalize-old").exists()
+    assert _status(run_dir) == "finalized"
+
+
+def test_a_failed_removal_of_the_old_manifest(
+    run_dir: Path, fake_tools: PdfCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _cli(run_dir) == 0
+    before = _tree(run_dir)
+    capsys.readouterr()
+    with _fault("unlink"):
+        assert _cli(run_dir) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "synthetic fault" in err
+    assert "No file in out/ and no manifest changed" in err
+    assert _tree(run_dir) == before
 
 
 def test_there_is_no_handover_option(run_dir: Path) -> None:

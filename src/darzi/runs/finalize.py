@@ -42,7 +42,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -52,12 +52,13 @@ from darzi.facts.check import MANIFEST, RunFiles, check, load_run
 from darzi.facts.check_meta import load_open_questions
 from darzi.facts.repo import InputError, load_master, load_rules
 from darzi.facts.validate import Finding
-from darzi.paths import exists, is_dir
+from darzi.paths import exists, is_dir, is_file
 from darzi.render.resume_matcher import ADAPTER, ResumeMatcher
 from darzi.render.word import letter_docx, resume_docx
 from darzi.runs.approve import run_is_approved, unreviewable
 from darzi.runs.roundtrip import check_letter, check_resume
 from darzi.runs.runs import (
+    APPLICATIONS,
     RUN_YAML,
     content_hash,
     load_meta,
@@ -65,6 +66,7 @@ from darzi.runs.runs import (
     write_atomic,
     write_status,
 )
+from darzi.runs.signing import run_target
 
 OUT = "out"
 WORK_NEW = ".finalize-new"
@@ -74,6 +76,8 @@ MANIFEST_SCHEMA_VERSION = 1
 FINALIZABLE = ("new", "finalized")
 # Each of these names in the run folder must not be a symbolic link.
 NO_LINKS = (OUT, WORK_NEW, WORK_OLD, MANIFEST, RUN_YAML)
+# When one of these names exists in the run folder, it must be of this kind.
+KINDS = {MANIFEST: "file", OUT: "folder", WORK_NEW: "folder", WORK_OLD: "folder"}
 LOCK_PREFIX = "darzi-finalize-"
 LOCK_SUFFIX = ".lock"
 
@@ -94,9 +98,11 @@ OfficeReady = Callable[[], bool]
 
 
 class Refused(InputError):
-    """`finalize` refuses the run: exit code 1. Nothing in the run folder changed.
+    """`finalize` refuses the run: exit code 1.
 
-    A plain InputError is invalid input: exit code 2.
+    Nothing in the run folder changed, except when a commit step fails after
+    the old manifest was removed: then the message says so, and a new
+    finalize repairs the run. A plain InputError is invalid input: exit code 2.
     """
 
 
@@ -168,8 +174,30 @@ def _locked(run_dir: Path) -> Generator[None]:
         os.close(fd)  # This also releases the lock.
 
 
+def _refuse_other_root(repo: Path, run_dir: Path) -> None:
+    """Raise InputError unless `run_dir` is `applications/<name>` of `repo`.
+
+    The real path of the run folder (each symbolic link followed) must be a
+    direct child of the `applications` folder in the real path of the data
+    root whose facts.toml and allowed_signers finalize uses. A run folder that
+    is a symbolic link is refused too.
+    """
+    try:
+        real = run_dir.resolve(strict=True)
+        applications = repo.resolve(strict=True) / APPLICATIONS
+        link = run_dir.is_symlink()
+    except (OSError, RuntimeError) as exc:
+        raise InputError(f"cannot read the path of {run_dir}: {exc}.") from exc
+    if link or real.parent != applications:
+        raise InputError(
+            f"{run_dir} is not a run folder of the data root {repo}. finalize "
+            f"works only on a real folder {APPLICATIONS}/<run> of the data root "
+            "that holds the key list. Pass the right run folder or --repo."
+        )
+
+
 def _refuse_links(run_dir: Path) -> None:
-    """Raise InputError when a name that finalize writes is a symbolic link."""
+    """Raise InputError for a name that finalize writes: a link, or a wrong kind."""
     if not is_dir(run_dir):
         raise InputError(f"{run_dir} is not a folder. Pass a run folder.")
     for name in NO_LINKS:
@@ -178,9 +206,11 @@ def _refuse_links(run_dir: Path) -> None:
                 f"{run_dir / name} is a symbolic link. finalize does not follow "
                 "links out of the run folder. Remove the link."
             )
-    out = run_dir / OUT
-    if exists(out) and not is_dir(out):
-        raise InputError(f"{out} is not a folder. Remove it, then finalize again.")
+    for name, kind in KINDS.items():
+        path = run_dir / name
+        right = is_file(path) if kind == "file" else is_dir(path)
+        if exists(path) and not right:
+            raise InputError(f"{path} is not a {kind}. Remove it, then finalize again.")
 
 
 def finalize(
@@ -199,7 +229,9 @@ def finalize(
     objects. `renderer_for`, `count_pages` and `office_ready` change only how
     the files are built, never the approval.
 
-    Raises Refused (exit code 1) when the run is submitted, another finalize
+    Raises InputError (exit code 2) first when `run_dir` is not a real folder
+    `applications/<run>` of `repo`. Raises Refused (exit code 1) when the run
+    is submitted, another finalize
     holds the lock, the run is not approved, the review cannot show a part of
     it, `facts check` has an error, LibreOffice is absent, or a file fails;
     RoundTripFailed (a Refused) with the findings of the round-trip check;
@@ -208,6 +240,7 @@ def finalize(
     """
     # Step 1: facts.toml and run.yaml. A submitted run is never changed.
     config = load_config(repo)
+    _refuse_other_root(repo, run_dir)
     _refuse_links(run_dir)
     meta = load_meta(run_dir)
     status: Any = meta.get("status")
@@ -298,9 +331,15 @@ def _build_and_commit(
         )
     # Step 9: remove the work folders of a crashed finalize; make a new one.
     work = run_dir / WORK_NEW
-    _remove(work)
-    _remove(run_dir / WORK_OLD)
-    work.mkdir()
+    try:
+        _remove(work)
+        _remove(run_dir / WORK_OLD)
+        work.mkdir()
+    except OSError as exc:
+        raise Refused(
+            f"cannot make the work folder {work}: {exc}. No file in out/ and no "
+            "manifest changed. Correct the cause, then finalize again."
+        ) from exc
     try:
         files, template, page_size = _build(passed, renderer, count_pages, work)
     except BaseException:
@@ -308,7 +347,7 @@ def _build_and_commit(
         raise
     manifest: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
-        "run": run_dir.name,
+        "run": run_target(run_dir),
         "date": today.isoformat(),
         "signed": True,
         "approval_hash": passed.digest,
@@ -322,30 +361,70 @@ def _build_and_commit(
         "print_settings": passed.settings,
         "files": files,
     }
-    # Step 11: no manifest from now on until the new one is complete.
-    (run_dir / MANIFEST).unlink(missing_ok=True)
-    # Step 12: swap the folders.
-    out, old = run_dir / OUT, run_dir / WORK_OLD
-    if exists(out):
-        os.rename(out, old)
-    os.rename(work, out)
-    _remove(old)
-    # The files in out/ must still have the hashes that the manifest gives.
-    for item in files:
-        if _sha256(run_dir / item["path"]) != item["sha256"]:
-            raise Refused(
-                f"{run_dir / item['path']} changed during finalize. "
-                "No manifest was written. Finalize again."
-            )
-    # Step 13: the manifest, then step 14: the status.
-    text = json.dumps(manifest, indent=2) + "\n"
-    write_atomic(run_dir / MANIFEST, text.encode("utf-8"))
-    write_status(run_dir, passed.meta, "finalized")
+    _commit(run_dir, work, files, manifest, passed.meta)
     pages = {item["kind"]: item["pages"] for item in files}
     warnings = _page_warnings(
         pages[RESUME_PDF], pages[RESUME_WORD], run.the_map.get("max_pages")
     )
     return Finalized(manifest, warnings)
+
+
+def _commit(
+    run_dir: Path,
+    work: Path,
+    files: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    meta: dict[str, Any],
+) -> None:
+    """Put the built files, the manifest and the status into place (11 to 14).
+
+    An OSError becomes Refused. Before the old manifest is removed, the work
+    folder is removed and the old state stays. After that, nothing is undone:
+    the run has no manifest, or a correct new manifest (the crash states of
+    the plan), and a new finalize repairs it.
+    """
+    # Step 11: no manifest from now on until the new one is complete.
+    try:
+        (run_dir / MANIFEST).unlink(missing_ok=True)
+    except OSError as exc:
+        with suppress(OSError):
+            _remove(work)
+        raise Refused(
+            f"cannot remove {run_dir / MANIFEST}: {exc}. No file in out/ and no "
+            "manifest changed. Correct the cause, then finalize again."
+        ) from exc
+    try:
+        # Step 12: swap the folders.
+        out, old = run_dir / OUT, run_dir / WORK_OLD
+        if exists(out):
+            os.rename(out, old)
+        os.rename(work, out)
+        _remove(old)
+        # The files in out/ must still have the hashes that the manifest gives.
+        for item in files:
+            if _sha256(run_dir / item["path"]) != item["sha256"]:
+                raise Refused(
+                    f"{run_dir / item['path']} changed during finalize. "
+                    "No manifest was written. Finalize again."
+                )
+        # Step 13: the manifest.
+        text = json.dumps(manifest, indent=2) + "\n"
+        write_atomic(run_dir / MANIFEST, text.encode("utf-8"))
+    except OSError as exc:
+        raise Refused(
+            f"finalize stopped after it removed the old manifest: {exc}. The run "
+            "has no manifest now. Correct the cause, then run facts finalize "
+            "again to repair the run."
+        ) from exc
+    # Step 14: the status.
+    try:
+        write_status(run_dir, meta, "finalized")
+    except OSError as exc:
+        raise Refused(
+            f"the files in out/ and {MANIFEST} are correct, but the status in "
+            f"{RUN_YAML} was not written: {exc}. Run facts finalize again to "
+            "repair the run."
+        ) from exc
 
 
 def _build(
