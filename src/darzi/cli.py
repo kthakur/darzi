@@ -17,6 +17,7 @@ from typing import Any
 
 from darzi import __version__
 from darzi.config import Approval, load_config
+from darzi.doctor import FAIL, WARN, Tools, has_failure, run_doctor
 from darzi.facts.check import (
     BASE,
     BASE_MAP,
@@ -86,13 +87,13 @@ from darzi.runs.status import RunRow, list_runs
 from darzi.schemas import ANSWERS, MASTER, RULES, SELECTION, load_schema
 from darzi.sourcing.fetch import fetch
 from darzi.sourcing.model import FetchFailure
+from darzi.workflows import NAMES as WORKFLOWS
+from darzi.workflows import load_workflow
 
 JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "doctor": "W-11",
-    "workflow": "W-11",
     "fit": "W-12",
 }
 
@@ -179,6 +180,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="record that the owner submitted the application",
     )
     submitted_cmd.add_argument("run", type=Path, help="a finalized run folder")
+    doctor_cmd = sub.add_parser(
+        "doctor",
+        parents=[common],
+        help="check the approval key, the renderer, LibreOffice and the settings",
+    )
+    doctor_cmd.add_argument(
+        "--offline", action="store_true", help="skip the release-tag lookup"
+    )
+    workflow_cmd = sub.add_parser(
+        "workflow", parents=[common], help="print an agent workflow, for example apply"
+    )
+    workflow_cmd.add_argument("name", help=f"one of: {', '.join(WORKFLOWS)}")
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -220,6 +233,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fill_plan(args.run, args.repo, args.json)
     if command == "submitted":
         return _submitted(args.run, args.repo, args.json)
+    if command == "doctor":
+        return _doctor(args.repo, args.offline, args.json)
+    if command == "workflow":
+        return _workflow(args.name, args.json)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -538,6 +555,69 @@ def _submitted(run: Path, repo_arg: Path | None, as_json: bool) -> int:
         _write_line(
             f"facts submitted: {run} has the status submitted ({result['submitted']})."
         )
+    return 0
+
+
+def _doctor(
+    repo_arg: Path | None, offline: bool, as_json: bool, tools: Tools | None = None
+) -> int:
+    try:
+        checks = run_doctor(repo_arg, offline, tools)
+    except InputError as exc:
+        print(_line(f"facts doctor: {exc}"), file=sys.stderr)
+        return 2
+    failed = has_failure(checks)
+    if as_json:
+        _write_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "command": "doctor",
+                "ok": not failed,
+                "checks": [
+                    {
+                        "name": c.name,
+                        "status": c.status,
+                        "ok": c.status != FAIL,
+                        "detail": c.detail,
+                    }
+                    for c in checks
+                ],
+            }
+        )
+    else:
+        for c in checks:
+            _write_line(f"{c.status:<4} {c.name}: {c.detail}")
+        warned = sum(c.status == WARN for c in checks)
+        problems = sum(c.status == FAIL for c in checks)
+        _write_line(
+            f"facts doctor: {len(checks)} checks, {warned} WARN, {problems} FAIL."
+        )
+    return 1 if failed else 0
+
+
+def _workflow(name: str, as_json: bool) -> int:
+    try:
+        text = load_workflow(name)
+    except KeyError:
+        print(
+            _line(
+                f"facts workflow: no workflow {name!r}. "
+                f"Use one of: {', '.join(WORKFLOWS)}."
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    if as_json:
+        _write_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "command": "workflow",
+                "name": name,
+                "text": text,
+            }
+        )
+    else:
+        sys.stdout.write(text)
     return 0
 
 
