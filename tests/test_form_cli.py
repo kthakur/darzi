@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -212,11 +213,11 @@ def test_the_text_plan(run_dir: Path, capsys: Capture) -> None:
 
 def test_each_printed_line_is_safe(run_dir: Path, capsys: Capture) -> None:
     # A zero-width space and a bidirectional mark in a run.yaml value.
-    _set_meta(run_dir, role="Designer​‮X")
+    _set_meta(run_dir, role="Designer\u200b\u202eX")
     code, out, _ = _plan(run_dir, capsys)
     assert code == 0
-    assert "​" not in out
-    assert "‮" not in out
+    assert "\u200b" not in out
+    assert "\u202e" not in out
     assert "role: Designer??X" in out
 
 
@@ -521,8 +522,8 @@ def test_no_answers_file(run_dir: Path, capsys: Capture) -> None:
         "https://JOBS.Example.COM/apply",
         "https://jobs.example.com./apply",
         "https://jobs.example.com:443/apply",
-        "https://ｊｏｂｓ.example.com/apply",
-        "https://jobs。example.com/apply",
+        "https://\uff4a\uff4f\uff42\uff53.example.com/apply",
+        "https://jobs\u3002example.com/apply",
         "https://a.board.example.com/apply",
     ],
 )
@@ -543,7 +544,7 @@ def test_a_blocked_host(run_dir: Path, capsys: Capture, url: str) -> None:
         "https://careers.example.com\\@jobs.example.com/",
         "https://careers.example.com/a b",
         "https://careers.example.com/\t",
-        "https://careers.example.com​/apply",
+        "https://careers.example.com\u200b/apply",
         "https://192.0.2.1/apply",
         "https://[2001:db8::1]/apply",
         "https://careers..example.com/apply",
@@ -649,3 +650,281 @@ def test_submitted_refuses_a_run_of_another_root(
     tree = _tree(run_dir)
     assert _submitted(run_dir, capsys, other) == 2
     assert _tree(run_dir) == tree
+
+
+# --- No value starts a new line (text) or breaks the JSON ------------------------
+
+# Each character at which str.splitlines() starts a new line.
+BOUNDARIES = [
+    chr(c) for c in (0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029)
+]
+NAMES = [f"U+{ord(b):04X}" for b in BOUNDARIES]
+INJECTED = "Injected"
+# The XML 1.0 control characters: a Word file cannot hold them.
+XML_BAD = {chr(c) for c in (0x0B, 0x0C, 0x1C, 0x1D, 0x1E)}
+PERSONAL = ["name", "title", "email", "phone", "location", "website"]
+
+
+def test_the_boundary_list_is_complete() -> None:
+    found = [chr(c) for c in range(0x110000) if len(f"a{chr(c)}b".splitlines()) > 1]
+    assert found == BOUNDARIES
+
+
+def _sections(out: str) -> list[str]:
+    """Return each line that is not indented: the section headings, in order.
+
+    The mark of an injected value ("?" or the line break mark, then the text)
+    is removed: the run name is in the first heading.
+    """
+    lines = [x for x in out.split("\n") if x and not x.startswith(" ")]
+    return [re.sub(rf"[^\w ]* ?{INJECTED}", "", x) for x in lines]
+
+
+def _same_shape(out: str, clean: str, extra: int = 0) -> None:
+    """Assert: the same line count, no injected line, the same section order.
+
+    `extra` is the number of true lines that an LF adds to the cover letter.
+    """
+    lines = out.splitlines()
+    assert len(lines) == len(clean.splitlines()) + extra, out
+    assert len(out.split("\n")) == len(clean.split("\n")) + extra
+    if not extra:
+        assert not any(line.lstrip().startswith(INJECTED) for line in lines), out
+    assert _sections(out) == _sections(clean)
+    assert all(b not in out for b in BOUNDARIES[1:])
+
+
+def _ascii_json(out: str) -> Any:
+    assert out.isascii()
+    assert out.endswith("}\n")
+    return json.loads(out)
+
+
+@pytest.mark.parametrize("field", ["company", "role"])
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_a_line_boundary_in_an_unsigned_value(
+    run_dir: Path, capsys: Capture, field: str, b: str
+) -> None:
+    clean = _plan(run_dir, capsys)[1]
+    value = f"Acme{b}{INJECTED}"
+    _set_meta(run_dir, **{field: value})
+    code, out, err = _plan(run_dir, capsys)
+    assert code == 0, err
+    _same_shape(out, clean)
+    code, out, err = _plan(run_dir, capsys, "--json")
+    assert code == 0, err
+    assert _ascii_json(out)["not_signed"][field] == value
+
+
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_a_line_boundary_in_the_apply_link_is_refused(
+    run_dir: Path, capsys: Capture, b: str
+) -> None:
+    # The link check refuses each boundary (a space or a control character).
+    _set_meta(run_dir, apply_url=f"{APPLY}{b}{INJECTED}")
+    _refused(run_dir, capsys, "plain http or https link")
+
+
+def _set_answer(run: Path, index: int, key: str, value: str) -> None:
+    path = run.parents[1] / "answers.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["answers"][index][key] = value
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("index", "key"), [(0, "question"), (0, "answer"), (3, "question")]
+)
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_a_line_boundary_in_an_answer(
+    run_dir: Path, capsys: Capture, index: int, key: str, b: str
+) -> None:
+    clean = _plan(run_dir, capsys)[1]
+    value = f"Yes{b}{INJECTED}"
+    _set_answer(run_dir, index, key, value)
+    code, out, err = _plan(run_dir, capsys)
+    assert code == 0, err
+    _same_shape(out, clean)
+    code, out, err = _plan(run_dir, capsys, "--json")
+    assert code == 0, err
+    plan = _ascii_json(out)
+    items: list[Json] = plan["answers"] + plan["empty_answers"]
+    assert any(a.get(key) == value for a in items)
+
+
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_a_line_boundary_in_an_answer_id(
+    run_dir: Path, capsys: Capture, b: str
+) -> None:
+    # The answers schema refuses the id: check f refuses the plan.
+    root = run_dir.parents[1]
+    _set_answer(run_dir, 0, "id", "bad id")
+    assert main(["answers", "--repo", str(root)]) == 1
+    clean = capsys.readouterr().out
+    _set_answer(run_dir, 0, "id", f"bad id{b}{INJECTED}")
+    _refused(run_dir, capsys, "answers.yaml has 1 errors")
+    assert main(["answers", "--repo", str(root)]) == 1
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) == len(clean.splitlines()), out
+    assert len(out.split("\n")) == len(clean.split("\n"))
+    assert not any(line.lstrip().startswith(INJECTED) for line in out.splitlines())
+    assert main(["answers", "--repo", str(root), "--json"]) == 1
+    assert _ascii_json(capsys.readouterr().out)["errors"] == 1
+
+
+@pytest.fixture(scope="module")
+def unapproved(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A data root with a run that is not approved yet."""
+    run = _make_run(tmp_path_factory.mktemp("unapproved"), letter=True)
+    with (run / "run.yaml").open("a", encoding="utf-8") as f:
+        f.write(f"apply_url: {APPLY}\n")
+    return run.parents[1]
+
+
+def _injected_run(unapproved: Path, tmp_path: Path, field: str, b: str) -> Path:
+    root = tmp_path / "injected"
+    shutil.copytree(unapproved, root, symlinks=True)
+    run = root / "applications" / RUN
+    if field == "letter":
+        letter = LETTER.replace("forms", f"forms{b}{INJECTED}")
+        assert letter != LETTER
+        (run / "cover_letter.md").write_text(letter, encoding="utf-8")
+    else:
+        data = _tailored(run)
+        data["personalInfo"][field] += f"{b}{INJECTED}"
+        (run / "tailored.json").write_text(json.dumps(data), encoding="utf-8")
+    return run
+
+
+@pytest.mark.parametrize("field", [*PERSONAL, "letter"])
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_a_line_boundary_in_an_approved_value(
+    run_dir: Path,
+    unapproved: Path,
+    tmp_path: Path,
+    capsys: Capture,
+    field: str,
+    b: str,
+) -> None:
+    """Through the real approve and finalize steps, where they permit the value."""
+    clean = _plan(run_dir, capsys)[1]
+    run = _injected_run(unapproved, tmp_path, field, b)
+    code = approve(run.parents[1], run)
+    out = capsys.readouterr().out
+    if field == "title" and b != "\n":
+        # facts check refuses the title: approve writes no record.
+        assert code == 1, out
+        return
+    assert code == 0, out
+    if field != "letter" and b in XML_BAD:
+        # The Word resume cannot hold an XML 1.0 control character: finalize stops.
+        with pytest.raises(ValueError, match="XML compatible"):
+            _finalize(run)
+        return
+    if field != "letter" and b in ("\x85", "\u2028", "\u2029"):
+        # The test PDF fake (WinAnsi text) cannot hold the character: finalize
+        # stops. test_no_value_of_the_plan_starts_a_line covers these values.
+        with pytest.raises(UnicodeEncodeError):
+            _finalize(run)
+        return
+    _finalize(run)
+    # cover_letter.md is read as text with universal newlines: a CR there is an
+    # LF in the approved letter, and so a true line of the letter.
+    letter_lf = field == "letter" and b in "\r\n"
+    code, out, err = _plan(run, capsys)
+    assert code == 0, err
+    _same_shape(out, clean, 1 if letter_lf else 0)
+    if letter_lf:
+        assert f"\n  I design forms\n  {INJECTED} for Acme.\n" in out
+    code, out, err = _plan(run, capsys, "--json")
+    assert code == 0, err
+    plan = _ascii_json(out)
+    if letter_lf:
+        assert plan["cover_letter"] == LETTER.replace("forms", f"forms\n{INJECTED}")
+    elif field == "letter":
+        assert plan["cover_letter"] == LETTER.replace("forms", f"forms{b}{INJECTED}")
+    else:
+        assert plan["personal_info"][field].endswith(f"{b}{INJECTED}")
+
+
+def _inject(value: Any, b: str) -> Any:
+    if isinstance(value, str):
+        return f"{value}{b}{INJECTED}"
+    if isinstance(value, list):
+        items: list[Any] = value
+        return [_inject(v, b) for v in items]
+    if isinstance(value, dict):
+        pairs: dict[str, Any] = value
+        return {k: _inject(v, b) for k, v in pairs.items()}
+    return value
+
+
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_no_value_of_the_plan_starts_a_line(
+    run_dir: Path, capsys: Capture, monkeypatch: pytest.MonkeyPatch, b: str
+) -> None:
+    """Each printed value has the boundary: run, file paths, kinds, hashes, the
+    personal data, the answers and their ids, company, role, apply_url, the
+    cover letter."""
+    clean_out = _plan(run_dir, capsys)[1]
+    clean: Json = json.loads(_plan(run_dir, capsys, "--json")[1])
+    plan: Json = _inject(clean, b)
+    if b == "\n":
+        # The letter is split at LF only: an LF there is a true line of the letter.
+        plan["cover_letter"] = clean["cover_letter"]
+    monkeypatch.setattr("darzi.cli.fill_plan", lambda *_args: plan)  # pyright: ignore[reportUnknownLambdaType]
+    code, out, err = _plan(run_dir, capsys)
+    assert code == 0, err
+    _same_shape(out, clean_out)
+    code, out, err = _plan(run_dir, capsys, "--json")
+    assert code == 0, err
+    assert _ascii_json(out) == plan
+
+
+@pytest.mark.parametrize("b", BOUNDARIES, ids=NAMES)
+def test_submitted_prints_one_line(run_dir: Path, capsys: Capture, b: str) -> None:
+    run = run_dir.with_name(f"{RUN}{b}{INJECTED}")
+    run_dir.rename(run)
+    assert main(["submitted", str(run), "--repo", str(run.parents[1]), "--json"]) == 0
+    assert _ascii_json(capsys.readouterr().out)["run"] == run.name
+    _set_meta(run, status="finalized")
+    assert main(["submitted", str(run), "--repo", str(run.parents[1])]) == 0
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1
+    assert len(out.splitlines()) == 1
+    assert out.startswith("facts submitted: ")
+
+
+# --- A manifest that is not UTF-8, a link at answers.yaml --------------------------
+
+
+def test_a_manifest_that_is_not_utf8(run_dir: Path, capsys: Capture) -> None:
+    path = run_dir / "manifest.json"
+    path.write_bytes(path.read_bytes().replace(b'"run"', b'"run\xff"', 1))
+    _refused(run_dir, capsys, "is not UTF-8 text", 2)
+    tree = _tree(run_dir)
+    assert main(["submitted", str(run_dir), "--repo", str(run_dir.parents[1])]) == 1
+    err = capsys.readouterr().err
+    assert "cannot be read as a manifest" in err
+    assert "Traceback" not in err
+    assert _tree(run_dir) == tree
+
+
+def test_answers_yaml_that_is_a_link(run_dir: Path, capsys: Capture) -> None:
+    root = run_dir.parents[1]
+    target = root / "answers-real.yaml"
+    (root / "answers.yaml").rename(target)
+    (root / "answers.yaml").symlink_to(target)
+    _refused(run_dir, capsys, "answers.yaml is a symbolic link", 2)
+    assert main(["answers", "--repo", str(root)]) == 2
+    assert "symbolic link" in capsys.readouterr().err
+
+
+def test_the_answers_are_marked_as_not_signed(run_dir: Path, capsys: Capture) -> None:
+    out = _plan(run_dir, capsys)[1]
+    assert (
+        "Answers (from answers.yaml, written by the owner, NOT covered by the "
+        "signature):" in out
+    )
+    plan = json.loads(_plan(run_dir, capsys, "--json")[1])
+    assert "answers.yaml" in plan["not_signed"]["note"]

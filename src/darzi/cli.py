@@ -61,7 +61,13 @@ from darzi.runs.approve import (
     unreviewable,
 )
 from darzi.runs.finalize import Refused, RoundTripFailed, finalize
-from darzi.runs.form import FormRefused, answers_report, fill_plan, mark_submitted
+from darzi.runs.form import (
+    ANSWERS_NOTE,
+    FormRefused,
+    answers_report,
+    fill_plan,
+    mark_submitted,
+)
 from darzi.runs.runs import (
     APPLICATIONS,
     APPROVAL,
@@ -451,8 +457,19 @@ def _answers(repo_arg: Path | None, as_json: bool) -> int:
         print(_line(f"facts answers: {exc}"), file=sys.stderr)
         return 2
     findings = result.findings
-    _print(_report_data("answers", repo, findings), findings, as_json, "answers.yaml")
-    return 1 if any(f.severity == "error" for f in findings) else 0
+    report = _report_data("answers", repo, findings)
+    if as_json:
+        _write_json(report)
+    else:
+        # A value of answers.yaml can be in a finding: one line for each part.
+        for f in findings:
+            _write_line(f"{f.severity} {f.rule} {f.location}: {f.message}")
+            if f.text:
+                _write_line(f"    text: {f.text}")
+        _write_line(
+            f"answers.yaml: {report['errors']} errors, {report['warnings']} warnings."
+        )
+    return 1 if report["errors"] else 0
 
 
 def _fill_plan(run: Path, repo_arg: Path | None, as_json: bool) -> int:
@@ -465,16 +482,22 @@ def _fill_plan(run: Path, repo_arg: Path | None, as_json: bool) -> int:
         print(_line(f"facts fill-plan: {exc}"), file=sys.stderr)
         return 1 if isinstance(exc, FormRefused) else 2
     if as_json:
-        text = json.dumps(plan, indent=2, ensure_ascii=False)
-    else:
-        text = _plan_text(plan)
-    for line in text.splitlines():
-        print(_line(line))
+        # The true values, as ASCII JSON: no value can break the document.
+        _write_json(plan)
+        return 0
+    # The plan is a list of lines that is never joined and split again: each
+    # value stays in its one line, also a value with a line boundary.
+    for line in _plan_lines(plan):
+        _write_line(line)
     return 0
 
 
-def _plan_text(plan: dict[str, Any]) -> str:
-    """Return the fill plan as text. Each value is on one line."""
+def _plan_lines(plan: dict[str, Any]) -> list[str]:
+    """Return the fill plan as text lines. Each value is in one line only.
+
+    The cover letter is in the lines that the approved text has when it is
+    split at LF only. `_write_line()` shows each other line boundary as "?".
+    """
     lines = [f"Fill plan for {plan['run']}", "", "Files to upload:"]
     lines += [
         f"  {f['kind']}: {f['path']} (sha256 {f['sha256']})" for f in plan["files"]
@@ -482,12 +505,13 @@ def _plan_text(plan: dict[str, Any]) -> str:
     lines += ["", "Personal data (approved resume):"]
     info: dict[str, Any] = plan["personal_info"]
     lines += [f"  {key}: {one_line(value)}" for key, value in info.items()]
-    lines += ["", "Answers:"]
+    lines += ["", f"Answers ({ANSWERS_NOTE}):"]
     lines += [
         f"  {a['id']}: {one_line(a['question'])} -> {one_line(a['answer'])}"
         for a in plan["answers"]
     ]
     lines += ["", "Empty answers (leave the field empty, tell the owner):"]
+    # Each id and question is from answers.yaml: not covered by the signature.
     lines += [f"  {a['id']}: {one_line(a['question'])}" for a in plan["empty_answers"]]
     lines += ["", "Rules:"] + [f"  - {rule}" for rule in plan["rules"]]
     unsigned: dict[str, Any] = plan["not_signed"]
@@ -497,7 +521,7 @@ def _plan_text(plan: dict[str, Any]) -> str:
     letter = plan["cover_letter"]
     lines += ["", "Cover letter (approved):"]
     lines += ["  (none)"] if letter is None else [f"  {x}" for x in letter.split("\n")]
-    return "\n".join(lines)
+    return lines
 
 
 def _submitted(run: Path, repo_arg: Path | None, as_json: bool) -> int:
@@ -509,13 +533,10 @@ def _submitted(run: Path, repo_arg: Path | None, as_json: bool) -> int:
         return 1 if isinstance(exc, FormRefused) else 2
     if as_json:
         data = {"schema_version": JSON_SCHEMA_VERSION, "command": "submitted", **result}
-        print(_line(json.dumps(data, ensure_ascii=False)))
+        _write_json(data, indent=None)
     else:
-        print(
-            _line(
-                f"facts submitted: {run} has the status submitted "
-                f"({result['submitted']})."
-            )
+        _write_line(
+            f"facts submitted: {run} has the status submitted ({result['submitted']})."
         )
     return 0
 
@@ -863,6 +884,10 @@ def _status(repo_arg: Path | None, as_json: bool) -> int:
     return 1 if report["errors"] else 0
 
 
+# Each line boundary of `str.splitlines()`, and the tab.
+NOT_IN_A_LINE = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029\t")
+
+
 def _encodable(text: str) -> str:
     """Return `text` with "?" for each character that stdout cannot encode.
 
@@ -879,11 +904,23 @@ def _encodable(text: str) -> str:
 def _line(text: str) -> str:
     """Return `text` as one line of visible characters for the terminal.
 
-    `safe()` keeps line ends and tabs. A line end or a tab would break the table
+    `safe()` keeps line ends and tabs. A line boundary (each character at
+    which `str.splitlines()` starts a new line) or a tab would break the table
     or start a false line, so it shows as "?" too. A character that stdout
     cannot encode shows as "?".
     """
-    return _encodable(safe(text).replace("\n", "?").replace("\t", "?"))
+    shown = safe(text)
+    return _encodable("".join("?" if c in NOT_IN_A_LINE else c for c in shown))
+
+
+def _write_line(text: str) -> None:
+    """Write `text` on stdout as exactly one line, with one write."""
+    sys.stdout.write(_line(text) + "\n")
+
+
+def _write_json(data: Any, indent: int | None = 2) -> None:
+    """Write `data` on stdout as one ASCII JSON document with the true values."""
+    sys.stdout.write(json.dumps(data, indent=indent, ensure_ascii=True) + "\n")
 
 
 def _cell(value: str | None) -> str:

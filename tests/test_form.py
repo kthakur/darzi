@@ -151,9 +151,9 @@ def test_answers_that_cannot_be_read(
     [
         ("jobs.example.com", "jobs.example.com"),
         ("Jobs.Example.COM.", "jobs.example.com"),
-        ("ｊｏｂｓ.example.com", "jobs.example.com"),
-        ("jobs．example.com", "jobs.example.com"),
-        ("bücher.example", "xn--bcher-kva.example"),
+        ("\uff4a\uff4f\uff42\uff53.example.com", "jobs.example.com"),
+        ("jobs\uff0eexample.com", "jobs.example.com"),
+        ("b\u00fccher.example", "xn--bcher-kva.example"),
         ("xn--bcher-kva.example", "xn--bcher-kva.example"),
         ("a..b", None),
         ("example.com..", None),
@@ -165,6 +165,87 @@ def test_answers_that_cannot_be_read(
 )
 def test_host_name(text: str, expected: str | None) -> None:
     assert host_name(text) == expected
+
+
+# A browser reads each of these hosts as an IP address: the last label must start
+# with a letter, not only be "not all digits".
+IP_LIKE = [
+    "0x7f000001",
+    "192.0.2.0x1",
+    "192.0.2.0X1",
+    "0177.0.0.1",
+    "example.0177",
+    "example.1a",
+    "16909060",
+]
+
+
+@pytest.mark.parametrize("host", IP_LIKE)
+def test_a_host_that_a_browser_reads_as_an_ip_address(host: str) -> None:
+    assert host_name(host) is None
+
+
+@pytest.mark.parametrize("host", IP_LIKE)
+def test_an_ip_like_link_is_refused(tmp_path: Path, host: str) -> None:
+    form = FormSettings(())
+    with pytest.raises(InputError, match="plain http or https link"):
+        apply_url({"apply_url": f"https://{host}/x"}, tmp_path / "run", form)
+
+
+@pytest.mark.parametrize("host", IP_LIKE)
+def test_an_ip_like_blocked_entry_is_refused(tmp_path: Path, host: str) -> None:
+    with pytest.raises(InputError, match="not a plain"):
+        load_config(_toml(tmp_path, f'[form]\nblocked_hosts = ["{host}"]\n'))
+
+
+# The German sharp s and the Greek final sigma: the older IDNA rules (the Python
+# codec) and the newer rules (httpx, and a browser) give different ASCII names.
+SHARP_S = "stra\u00dfe.example"
+SHARP_S_PUNYCODE = "xn--strae-oqa.example"
+FINAL_SIGMA = "\u03c3\u03bf\u03c2.example"
+FINAL_SIGMA_PUNYCODE = "xn--0xagb.example"
+
+
+@pytest.mark.parametrize("host", [SHARP_S, FINAL_SIGMA, "STRA\u1e9eE.example"])
+def test_a_name_that_the_two_idna_rules_read_differently(host: str) -> None:
+    assert host_name(host) is None
+
+
+@pytest.mark.parametrize(
+    ("entry", "link"),
+    [
+        (SHARP_S, SHARP_S_PUNYCODE),
+        (SHARP_S_PUNYCODE, SHARP_S),
+        (FINAL_SIGMA, FINAL_SIGMA_PUNYCODE),
+        (FINAL_SIGMA_PUNYCODE, FINAL_SIGMA),
+    ],
+)
+def test_an_idna_mismatch_is_never_passed(
+    tmp_path: Path, entry: str, link: str
+) -> None:
+    root = _toml(tmp_path, f'[form]\nblocked_hosts = ["{entry}"]\n')
+    url = {"apply_url": f"https://{link}/apply"}
+    if not entry.isascii():
+        # The entry in Unicode is refused: no blocked list can hold it.
+        with pytest.raises(InputError, match="not a plain"):
+            load_config(root)
+        return
+    form = load_config(root).form
+    assert form == FormSettings((entry,))
+    # The link in Unicode is refused as an invalid link.
+    with pytest.raises(InputError, match="plain http or https link"):
+        apply_url(url, tmp_path / "run", form)
+
+
+def test_a_punycode_link_of_a_punycode_entry_is_blocked(tmp_path: Path) -> None:
+    form = FormSettings((SHARP_S_PUNYCODE,))
+    url = {"apply_url": f"https://jobs.{SHARP_S_PUNYCODE.upper()}/apply"}
+    with pytest.raises(InputError, match="blocks"):
+        apply_url(url, tmp_path / "run", form)
+
+
+def test_a_name_that_both_idna_rules_read_the_same_passes() -> None:
+    assert host_name("b\u00fccher.example") == "xn--bcher-kva.example"
 
 
 def _toml(tmp_path: Path, form: str) -> Path:

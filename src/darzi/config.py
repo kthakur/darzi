@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from darzi.facts.repo import InputError
 from darzi.paths import is_file
 
@@ -103,23 +105,41 @@ def host_name(text: str) -> str | None:
     """Return the host name `text` in one comparable ASCII form, or None.
 
     The steps: Unicode NFKC, each IDNA dot as ".", small letters, one trailing
-    dot removed, then IDNA (the Python codec) to ASCII. The result must be
-    labels of letters, digits and hyphens, separated by one dot, and the last
-    label must not be only digits (an IP address is not a host name). Each
-    other text gives None.
+    dot removed. An ASCII name (also an `xn--` name) stays as it is. A name
+    with a non-ASCII character goes to ASCII by the older IDNA rules (the
+    Python codec) and by the newer rules (httpx, the same test as the fetch
+    guard); when the two differ (for example the German sharp s or the Greek
+    final sigma), the name gives None. The result must be labels of letters,
+    digits and hyphens, separated by one dot, and the last label must start
+    with a letter: a browser reads a last label such as 1, 0x7f000001 or 0177
+    as part of an IP address. Each other text gives None.
     """
     value = _DOTS.sub(".", unicodedata.normalize("NFKC", text)).lower()
     value = value.removesuffix(".")
-    try:
-        ascii_name = value.encode("idna").decode("ascii").lower()
-    except (UnicodeError, ValueError):
+    ascii_name = value if value.isascii() else _idna(value)
+    if ascii_name is None:
         return None
     labels = ascii_name.split(".")
     if len(ascii_name) > MAX_HOST or not all(_LABEL.fullmatch(x) for x in labels):
         return None
-    if labels[-1].isdigit():
+    if not labels[-1][0].isalpha():
         return None
     return ascii_name
+
+
+def _idna(value: str) -> str | None:
+    """Return the ASCII form of the non-ASCII name `value` when both IDNA rules agree.
+
+    Else return None.
+    """
+    if any(c in value for c in "/\\?#@:[]%") or any(c.isspace() for c in value):
+        return None
+    try:
+        older = value.encode("idna").decode("ascii").lower()
+        newer = httpx.URL(f"https://{value}/").raw_host.decode("ascii").lower()
+    except (httpx.InvalidURL, UnicodeError, ValueError):
+        return None
+    return older if older == newer else None
 
 
 def load_config(repo: Path) -> Config:

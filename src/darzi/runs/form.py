@@ -119,8 +119,10 @@ RULES = (
 UNSIGNED_NOTE = (
     "company, role and apply_url come from run.yaml. The owner's signature does "
     "not cover them. company and role are labels only: do not put them into "
-    "the form."
+    "the form. The answers and empty_answers come from answers.yaml: the owner "
+    "writes them, but the signature does not cover them either."
 )
+ANSWERS_NOTE = "from answers.yaml, written by the owner, NOT covered by the signature"
 
 
 class FormRefused(InputError):
@@ -145,6 +147,11 @@ def load_answers(repo: Path) -> dict[str, Any]:
     uses a YAML alias, is not valid YAML, or is not a mapping.
     """
     path = repo / ANSWERS
+    if path.is_symlink():
+        raise InputError(
+            f"{path} is a symbolic link. The form commands do not follow links. "
+            f"Put the file itself at {ANSWERS}."
+        )
     data: Any = read_yaml(
         path,
         "The owner writes the standard answers there (see the answers schema).",
@@ -259,7 +266,13 @@ def fill_plan(
         if status != FINALIZED:
             raise FormRefused(_status_message(run_dir, status))
         # b. The approval, decided on the content in memory.
-        run = load_run(run_dir)
+        try:
+            run = load_run(run_dir)
+        except UnicodeDecodeError as exc:  # For example a manifest.json in Latin-1.
+            raise InputError(
+                f"a file of {run_dir} is not UTF-8 text: {exc.reason} at byte "
+                f"{exc.start}. Run facts finalize {run_dir} again."
+            ) from exc
         verdict = run_is_approved(repo, config.approval, run_dir, run)
         if not verdict.approved or verdict.fingerprint is None:
             raise FormRefused(
