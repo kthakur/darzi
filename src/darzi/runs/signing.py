@@ -35,7 +35,7 @@ from typing import Any
 
 from darzi.config import Approval
 from darzi.paths import is_file
-from darzi.runs.runs import APPLICATIONS
+from darzi.runs.runs import APPLICATIONS, APPROVAL
 
 # The OpenSSH tool. macOS and the Linux distributions install it here.
 SSH_KEYGEN = "/usr/bin/ssh-keygen"
@@ -290,6 +290,24 @@ def _claims_problem(
     return ""
 
 
+def _binding_problem(kind: str, target: str, record: Path, target_path: Path) -> str:
+    """Return why `target` or `record` is not that of `target_path`, or "".
+
+    The name and the record path are derived here from `target_path`. The
+    record must be in the same real folder and have the same name.
+    """
+    if kind == "run":
+        name, own = run_target(target_path), target_path / APPROVAL
+    else:
+        name, own = selection_target(target_path), selection_record(target_path)
+    if target != name:
+        return f"the target name {target!r} is not the name of {target_path}"
+    same_folder = record.parent.resolve(strict=True) == own.parent.resolve(strict=True)
+    if not same_folder or record.name != own.name:
+        return f"{record} is not the approval record of {target_path}"
+    return ""
+
+
 def verify_approval(
     repo: Path,
     settings: Approval,
@@ -304,6 +322,8 @@ def verify_approval(
 
     `target_path` is the selection file or the run folder. It must be in the
     data root `repo` (`in_data_root()`); else the target is not approved.
+    `target` and `record` must be the name and the record of `target_path`;
+    else the target is not approved.
     Approved means: `ssh-keygen` verifies the signature `<record>.sig` on the
     exact bytes of the record with the signer, the namespace and the
     `allowed_signers` file of `settings`; then the record has exactly the six
@@ -330,6 +350,10 @@ def _verify(
         return _no(f"{kind!r} is not a kind of approval")
     # The target must be in the data root whose key list verifies the record.
     problem = target_problem(repo, kind, target_path)
+    if problem:
+        return _no(problem)
+    # The target name and the record must be those of `target_path`.
+    problem = _binding_problem(kind, target, record, target_path)
     if problem:
         return _no(problem)
     problem = settings_problem(repo, settings)

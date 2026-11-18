@@ -27,22 +27,22 @@ The order of the writes:
 - So no reader ever sees new files with an old manifest.
 
 The lock that stops two finalize runs of one run folder is a file in the
-system temporary folder (see `lock_path`), not in the run folder. So it is
-never an output, and a refusal leaves the run folder as it was.
+system temporary folder (see `lock_path` in `darzi.runs.lock`), not in the run
+folder. So it is never an output, and a refusal leaves the run folder as it
+was. `fill-plan` and `submitted` take the same lock. finalize reads `run.yaml`
+again inside the lock, so a run that became submitted meanwhile is refused.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
-import tempfile
-from collections.abc import Callable, Generator
-from contextlib import contextmanager, suppress
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,8 @@ from darzi.paths import exists, is_dir, is_file
 from darzi.render.resume_matcher import ADAPTER, ResumeMatcher
 from darzi.render.word import letter_docx, resume_docx
 from darzi.runs.approve import run_is_approved, unreviewable
+from darzi.runs.lock import lock_path as lock_path
+from darzi.runs.lock import locked
 from darzi.runs.roundtrip import check_letter, check_resume
 from darzi.runs.runs import (
     APPLICATIONS,
@@ -78,8 +80,6 @@ FINALIZABLE = ("new", "finalized")
 NO_LINKS = (OUT, WORK_NEW, WORK_OLD, MANIFEST, RUN_YAML)
 # When one of these names exists in the run folder, it must be of this kind.
 KINDS = {MANIFEST: "file", OUT: "folder", WORK_NEW: "folder", WORK_OLD: "folder"}
-LOCK_PREFIX = "darzi-finalize-"
-LOCK_SUFFIX = ".lock"
 
 # The kinds of the output files, and whether a second build of the same
 # content gives the same bytes. The Word files have fixed zip dates (W-7).
@@ -136,42 +136,6 @@ class _Passed:
     digest: str
     fingerprint: str
     settings: dict[str, Any]
-
-
-def lock_path(run_dir: Path) -> Path:
-    """Return the lock file of `run_dir`, in the system temporary folder.
-
-    The name holds the SHA-256 hash of the resolved run folder path, so the
-    same run folder always gives the same lock file.
-    """
-    key = hashlib.sha256(os.fsencode(run_dir.resolve())).hexdigest()[:32]
-    return Path(tempfile.gettempdir()) / f"{LOCK_PREFIX}{key}{LOCK_SUFFIX}"
-
-
-@contextmanager
-def _locked(run_dir: Path) -> Generator[None]:
-    """Hold the lock of `run_dir`. The system releases it when the process stops."""
-    try:
-        # O_NOFOLLOW: a symbolic link in the temporary folder is refused.
-        fd = os.open(
-            lock_path(run_dir), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600
-        )
-    except (OSError, RuntimeError) as exc:
-        raise Refused(
-            f"cannot open the lock file of {run_dir}: {exc}. "
-            "Check the temporary folder."
-        ) from exc
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise Refused(
-                f"another finalize of {run_dir} runs now. Wait for it to end, "
-                "then try again."
-            ) from exc
-        yield
-    finally:
-        os.close(fd)  # This also releases the lock.
 
 
 def _refuse_other_root(repo: Path, run_dir: Path) -> None:
@@ -248,7 +212,16 @@ def finalize(
             "only on a run with the status new or finalized."
         )
     # Step 2: one finalize at a time for this run folder.
-    with _locked(run_dir):
+    with locked(run_dir, Refused):
+        # Step 2b: read run.yaml again inside the lock. A submitted run is
+        # never changed, also when it became submitted after step 1.
+        meta = load_meta(run_dir)
+        status = meta.get("status")
+        if status not in FINALIZABLE:
+            raise Refused(
+                f"{run_dir / RUN_YAML} has the status {status!r}. finalize works "
+                "only on a run with the status new or finalized."
+            )
         # Step 3: read the inputs ONE time. Each later step uses `run`.
         run = load_run(run_dir)
         # Step 4: the approval, decided on the content in memory.

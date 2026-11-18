@@ -51,6 +51,7 @@ from darzi.render.port import Renderer, RenderError
 from darzi.runs.approve import (
     Ask,
     confirm,
+    one_line,
     record_and_sign,
     require_terminal,
     run_text,
@@ -60,6 +61,7 @@ from darzi.runs.approve import (
     unreviewable,
 )
 from darzi.runs.finalize import Refused, RoundTripFailed, finalize
+from darzi.runs.form import FormRefused, answers_report, fill_plan, mark_submitted
 from darzi.runs.runs import (
     APPLICATIONS,
     APPROVAL,
@@ -75,7 +77,7 @@ from darzi.runs.signing import (
     target_problem,
 )
 from darzi.runs.status import RunRow, list_runs
-from darzi.schemas import MASTER, RULES, SELECTION, load_schema
+from darzi.schemas import ANSWERS, MASTER, RULES, SELECTION, load_schema
 from darzi.sourcing.fetch import fetch
 from darzi.sourcing.model import FetchFailure
 
@@ -83,9 +85,6 @@ JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "answers": "W-9",
-    "fill-plan": "W-9",
-    "submitted": "W-9",
     "doctor": "W-11",
     "workflow": "W-11",
     "fit": "W-12",
@@ -161,6 +160,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="build the files of an approved run in out/ and write manifest.json",
     )
     finalize_cmd.add_argument("run", type=Path, help="run folder with approval.json")
+    sub.add_parser("answers", parents=[common], help="check answers.yaml")
+    plan_cmd = sub.add_parser(
+        "fill-plan",
+        parents=[common],
+        help="print the only data that a form fill can use (each check must pass)",
+    )
+    plan_cmd.add_argument("run", type=Path, help="a finalized run folder")
+    submitted_cmd = sub.add_parser(
+        "submitted",
+        parents=[common],
+        help="record that the owner submitted the application",
+    )
+    submitted_cmd.add_argument("run", type=Path, help="a finalized run folder")
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -196,6 +208,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _render(args.run, args.repo, args.draft, args.json)
     if command == "finalize":
         return _finalize(args.run, args.repo, args.json)
+    if command == "answers":
+        return _answers(args.repo, args.json)
+    if command == "fill-plan":
+        return _fill_plan(args.run, args.repo, args.json)
+    if command == "submitted":
+        return _submitted(args.run, args.repo, args.json)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -422,6 +440,83 @@ def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
             f"{manifest['signer_fingerprint']}). Status: finalized."
         )
     )
+    return 0
+
+
+def _answers(repo_arg: Path | None, as_json: bool) -> int:
+    try:
+        repo = find_repo(repo_arg)
+        result = answers_report(repo, load_schema(ANSWERS), load_rules(repo))
+    except InputError as exc:
+        print(_line(f"facts answers: {exc}"), file=sys.stderr)
+        return 2
+    findings = result.findings
+    _print(_report_data("answers", repo, findings), findings, as_json, "answers.yaml")
+    return 1 if any(f.severity == "error" for f in findings) else 0
+
+
+def _fill_plan(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    # Each refusal prints one line on stderr and nothing on stdout. No flag
+    # changes a check (docs/SPEC.md sections 6 and 7).
+    try:
+        repo = find_repo(repo_arg)
+        plan = fill_plan(repo, run, load_schema(ANSWERS), load_rules(repo))
+    except InputError as exc:
+        print(_line(f"facts fill-plan: {exc}"), file=sys.stderr)
+        return 1 if isinstance(exc, FormRefused) else 2
+    if as_json:
+        text = json.dumps(plan, indent=2, ensure_ascii=False)
+    else:
+        text = _plan_text(plan)
+    for line in text.splitlines():
+        print(_line(line))
+    return 0
+
+
+def _plan_text(plan: dict[str, Any]) -> str:
+    """Return the fill plan as text. Each value is on one line."""
+    lines = [f"Fill plan for {plan['run']}", "", "Files to upload:"]
+    lines += [
+        f"  {f['kind']}: {f['path']} (sha256 {f['sha256']})" for f in plan["files"]
+    ]
+    lines += ["", "Personal data (approved resume):"]
+    info: dict[str, Any] = plan["personal_info"]
+    lines += [f"  {key}: {one_line(value)}" for key, value in info.items()]
+    lines += ["", "Answers:"]
+    lines += [
+        f"  {a['id']}: {one_line(a['question'])} -> {one_line(a['answer'])}"
+        for a in plan["answers"]
+    ]
+    lines += ["", "Empty answers (leave the field empty, tell the owner):"]
+    lines += [f"  {a['id']}: {one_line(a['question'])}" for a in plan["empty_answers"]]
+    lines += ["", "Rules:"] + [f"  - {rule}" for rule in plan["rules"]]
+    unsigned: dict[str, Any] = plan["not_signed"]
+    lines += ["", "NOT covered by the signature:", f"  {unsigned['note']}"]
+    lines += [f"  {key}: {one_line(unsigned[key])}" for key in ("company", "role")]
+    lines += [f"  apply_url: {one_line(unsigned['apply_url'])}"]
+    letter = plan["cover_letter"]
+    lines += ["", "Cover letter (approved):"]
+    lines += ["  (none)"] if letter is None else [f"  {x}" for x in letter.split("\n")]
+    return "\n".join(lines)
+
+
+def _submitted(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    try:
+        repo = find_repo(repo_arg)
+        result = mark_submitted(repo, run, _today())
+    except InputError as exc:
+        print(_line(f"facts submitted: {exc}"), file=sys.stderr)
+        return 1 if isinstance(exc, FormRefused) else 2
+    if as_json:
+        data = {"schema_version": JSON_SCHEMA_VERSION, "command": "submitted", **result}
+        print(_line(json.dumps(data, ensure_ascii=False)))
+    else:
+        print(
+            _line(
+                f"facts submitted: {run} has the status submitted "
+                f"({result['submitted']})."
+            )
+        )
     return 0
 
 

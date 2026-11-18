@@ -18,6 +18,7 @@ from darzi.config import (
     FACTS_TOML,
     Approval,
     Config,
+    FormSettings,
     RenderSettings,
     ResumeMatcherSettings,
     load_config,
@@ -33,6 +34,9 @@ SYNTHETIC = Approval(
     allowed_signers="allowed_signers",
     key="/nonexistent/darzi-test/approval_key",
 )
+
+# The [form] section of tests/data/facts.toml.
+SYNTHETIC_FORM = FormSettings(("jobs.example.com", "board.example.com"))
 
 # The [render] section of tests/data/facts.toml.
 SYNTHETIC_RENDER = RenderSettings(
@@ -58,7 +62,10 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 def test_synthetic_facts_toml_loads() -> None:
     assert load_config(DATA) == Config(
-        owner_name="Test Person", approval=SYNTHETIC, render=SYNTHETIC_RENDER
+        owner_name="Test Person",
+        approval=SYNTHETIC,
+        render=SYNTHETIC_RENDER,
+        form=SYNTHETIC_FORM,
     )
 
 
@@ -394,7 +401,10 @@ def test_config_does_not_read_the_environment(
         written = load_config(tmp_path)
     assert reads == []
     assert synthetic == Config(
-        owner_name="Test Person", approval=SYNTHETIC, render=SYNTHETIC_RENDER
+        owner_name="Test Person",
+        approval=SYNTHETIC,
+        render=SYNTHETIC_RENDER,
+        form=SYNTHETIC_FORM,
     )
     assert written == Config(owner_name="Test Person")
     assert empty == Config()
