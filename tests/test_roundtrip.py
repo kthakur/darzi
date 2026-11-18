@@ -30,6 +30,7 @@ from darzi.runs.roundtrip import (
 )
 
 from .pdf_fakes import pdf_bytes
+from .resume_pdf import pdf_lines, strip
 
 EXPORT = Path(__file__).parent / "expected" / "corporate-tech.export.json"
 KINDS = ("docx", "pdf")
@@ -91,58 +92,6 @@ def rich() -> Resume:
     for order, meta in enumerate(resume["sectionMeta"]):
         meta["order"] = order
     return resume
-
-
-def pdf_lines(resume: Resume) -> list[str]:
-    """Return the text lines of the résumé as the Resume Matcher template shows it."""
-    info = resume.get("personalInfo") or {}
-    lines = [str(info["name"]).upper(), str(info.get("title", "")).upper()]
-    contact = [info.get(k) for k in ("email", "phone", "location")]
-    contact += [
-        template_link(info[k]) for k in ("website", "linkedin", "github") if info.get(k)
-    ]
-    lines.append(", ".join(str(c) for c in contact if c))
-    for key, label in section_order(resume):
-        lines.append(label.upper())
-        if key == "summary":
-            lines.append(resume["summary"])
-        elif key == "workExperience":
-            entries = resume["workExperience"]
-            for e in (e for e in entries if not e.get("condensed")):
-                lines += [e["title"], template_date(e["years"]), e["company"]]
-                lines += [e["location"]] + [
-                    f"\u2022 {strip(d)}" for d in e["description"]
-                ]
-            old = [e for e in entries if e.get("condensed")]
-            if old:
-                lines.append("Earlier experience")
-            for e in old:
-                lines.append(
-                    f"{e['title']}, {e['company']}, {template_date(e['years'])}"
-                )
-        elif key == "personalProjects":
-            for e in resume["personalProjects"]:
-                lines += [e["name"], template_date(e["years"]), e["role"]]
-                lines += [f"\u2022 {strip(d)}" for d in e["description"]]
-        elif key == "education":
-            for e in resume["education"]:
-                lines += [e["institution"], template_date(e["years"]), e["degree"]]
-                lines += [e["description"]] if e.get("description") else []
-        elif key == "additional":
-            extra = resume["additional"]
-            for name, field in (
-                ("Technical Skills:", "technicalSkills"),
-                ("Languages:", "languages"),
-                ("Certifications:", "certificationsTraining"),
-                ("Awards:", "awards"),
-            ):
-                if extra.get(field):
-                    lines.append(f"{name} {', '.join(extra[field])}")
-    return lines
-
-
-def strip(text: str) -> str:
-    return text.replace("<strong>", "").replace("</strong>", "")
 
 
 def write(kind: str, resume: Resume, folder: Path, name: str = "resume") -> Path:

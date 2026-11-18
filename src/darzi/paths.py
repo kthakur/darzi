@@ -6,6 +6,8 @@ Python 3.14 they return False. Then a folder that cannot be read looks like a
 folder that does not exist. These functions call `stat()` and keep the behavior
 of Python 3.12 on each version: they return False only for the errors for which
 Python 3.12 returns False, and raise each other OSError.
+
+`write_atomic()` writes a file with a temporary file and one rename.
 """
 
 import errno
@@ -53,3 +55,26 @@ def is_dir(path: Path) -> bool:
 def exists(path: Path) -> bool:
     """Return True when `path` exists. A broken link does not exist."""
     return _stat(path) is not None
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write `data` to `path` with a temporary file and one rename.
+
+    The temporary file is `.<name>.tmp` in the same folder. An old temporary
+    file is removed first. The new one is made with O_EXCL and O_NOFOLLOW, so
+    a symbolic link at that name is never followed. A reader sees the old file
+    or the complete new file, never a part of it.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.unlink(missing_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
