@@ -61,7 +61,7 @@ APPLY = "https://careers.example.com/apply/1"
 # built in parts, so that the privacy gate of the repo does not read them as
 # real contact data.
 PRIVATE = {
-    "email": "someone" + "@" + "example.net",
+    "email": "someone" + "@" + "example.org",
     "phone": "555" + "-010-" + "0142",
     "term": "Zorbek",
 }
@@ -735,3 +735,218 @@ def test_submitted_accepts_a_real_handover_run(
     assert code == 0, capsys.readouterr().err
     assert _status(new_run) == "submitted"
     _refused(new_run, "status 'submitted'")
+
+
+# --- Plain run paths and the stricter manifest test (F-4) -------------------------
+
+
+@pytest.fixture
+def sync(tmp_path: Path) -> Path:
+    """The parent folder of the copy_to folder `phone`; it holds nothing else."""
+    folder = tmp_path / "sync"
+    (folder / "phone").mkdir(parents=True)
+    return folder
+
+
+def _path_refused(run: Path, path: Path, sync: Path, *, signed: bool) -> None:
+    """Assert exit code 2 for `path`, and no change in the data root or `sync`."""
+    root = run.parents[1]
+    before, sync_before = _tree(root), _tree(sync)
+    with pytest.raises(InputError, match="is not a plain run path") as info:
+        if signed:
+            _finalize(path, repo=root)
+        else:
+            _handover(path, repo=root)
+    assert not isinstance(info.value, Refused)
+    assert "applications/<run>" in str(info.value)
+    assert _tree(root) == before
+    assert _tree(sync) == sync_before
+
+
+@pytest.mark.parametrize("case", ["notes/..", "out/..", ".. from notes"])
+def test_handover_refuses_a_run_path_that_is_not_plain(
+    new_run: Path, sync: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    _set_copy_to(new_run.parents[1], str(sync / "phone"))
+    if case == "out/..":
+        _handover(new_run)
+    (new_run / "notes").mkdir()
+    path = new_run / case
+    if case == ".. from notes":
+        monkeypatch.chdir(new_run / "notes")
+        path = Path("..")
+    _path_refused(new_run, path, sync, signed=False)
+
+
+def test_signed_finalize_refuses_a_run_path_that_is_not_plain(
+    approved_run: Path, sync: Path
+) -> None:
+    _finalize(approved_run)
+    manifest = _manifest(approved_run)
+    _path_refused(approved_run, approved_run / "out" / "..", sync, signed=True)
+    assert _manifest(approved_run) == manifest
+    assert sorted(p.name for p in (approved_run / "out").iterdir()) == NAMES
+
+
+def test_the_command_with_a_dot_copies_into_the_run_sub_folder(
+    new_run: Path,
+    sync: Path,
+    fake_tools: PdfCli,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `.` alone is the real run folder (choice (b) of F-4), on both paths.
+    root, phone = new_run.parents[1], sync / "phone"
+    _set_copy_to(root, str(phone))
+    monkeypatch.chdir(new_run)
+    assert main(["finalize", ".", "--repo", str(root), "--handover"]) == 0, (
+        capsys.readouterr().err
+    )
+    assert _manifest(new_run)["run"] == RUN
+    assert sorted(p.name for p in sync.iterdir()) == ["phone"]
+    assert sorted(p.name for p in phone.iterdir()) == [RUN]
+    assert sorted(p.name for p in (phone / RUN).iterdir()) == NAMES
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_a_plain_run_path_works_on_both_paths(
+    approved_run: Path, sync: Path, monkeypatch: pytest.MonkeyPatch, relative: bool
+) -> None:
+    root, phone = approved_run.parents[1], sync / "phone"
+    _set_copy_to(root, str(phone))
+    seen: list[Path] = []
+    real = finalize_module._commit  # pyright: ignore[reportPrivateUsage]
+
+    def commit(run_dir: Path, *args: Any) -> None:
+        seen.append(run_dir)
+        real(run_dir, *args)
+
+    monkeypatch.setattr(finalize_module, "_commit", commit)
+    path = approved_run
+    if relative:
+        monkeypatch.chdir(root)
+        path = Path("applications") / RUN
+    done = _handover(path, repo=root)
+    assert done.copied_to == phone / RUN
+    assert sorted(p.name for p in phone.iterdir()) == [RUN]
+    assert sorted(p.name for p in (phone / RUN).iterdir()) == NAMES
+    assert _manifest(approved_run)["run"] == RUN
+    _finalize(path, repo=root)
+    assert _manifest(approved_run)["signed"] is True
+    # Each step used the one real path of the run folder.
+    assert seen == [approved_run.resolve(), approved_run.resolve()]
+
+
+@pytest.mark.parametrize("name", ["", ".", ".."])
+def test_a_copy_sub_folder_name_that_is_not_plain_is_invalid(
+    sync: Path, name: str
+) -> None:
+    before = _tree(sync)
+    copy_target = finalize_module._copy_target  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(InputError, match="is not a plain folder name"):
+        copy_target(sync / "phone", name)
+    assert _tree(sync) == before
+
+
+def test_a_copy_sub_folder_outside_copy_to_is_invalid(sync: Path) -> None:
+    before = _tree(sync)
+    copy_target = finalize_module._copy_target  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(InputError, match="not a folder directly in the copy_to"):
+        copy_target(sync / "phone", "notes/..")
+    assert _tree(sync) == before
+
+
+def test_handover_refuses_a_run_name_that_is_not_plain_before_the_build(
+    new_run: Path, sync: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_copy_to(new_run.parents[1], str(sync / "phone"))
+
+    def run_target(_path: Path) -> str:
+        return ".."
+
+    monkeypatch.setattr(finalize_module, "run_target", run_target)
+    _invalid(new_run, "is not a plain folder name", sync)
+
+
+@pytest.mark.parametrize("parts", [("..",), (RUN, ".."), ("..", "phone", "..", "x")])
+def test_the_copy_writes_only_into_a_sub_folder_of_copy_to(
+    new_run: Path, sync: Path, parts: tuple[str, ...]
+) -> None:
+    _handover(new_run)
+    phone = sync / "phone"
+    before = _tree(sync)
+    copy_files = finalize_module._copy_files  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(InputError, match="not a folder directly in the copy_to"):
+        copy_files(new_run, _manifest(new_run)["files"], phone.joinpath(*parts), phone)
+    assert _tree(sync) == before
+
+
+def test_a_copy_outside_copy_to_after_the_commit_fails_with_exit_1(
+    new_run: Path, sync: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    phone = sync / "phone"
+    _set_copy_to(new_run.parents[1], str(phone))
+    real = finalize_module._copy_files  # pyright: ignore[reportPrivateUsage]
+
+    def copy_files(run_dir: Path, files: Any, target: Path, copy_dir: Path) -> None:
+        real(run_dir, files, target / "..", copy_dir)
+
+    monkeypatch.setattr(finalize_module, "_copy_files", copy_files)
+    before = _tree(sync)
+    with pytest.raises(CopyFailed, match="the run is finalized") as info:
+        _handover(new_run)
+    assert f"{new_run / 'out'}/" in str(info.value)
+    assert _tree(sync) == before
+    assert _manifest(new_run)["signed"] is False
+
+
+def _signed_false_with_approval_keys(run: Path) -> None:
+    _finalize(run)
+    data = _manifest(run)
+    data["signed"] = False
+    (run / "manifest.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _duplicate_signed(run: Path) -> None:
+    _handover(run)
+    path = run / "manifest.json"
+    text = path.read_text(encoding="utf-8")
+    assert text.count('"signed": false,') == 1
+    text = text.replace('"signed": false,', '"signed": true,\n  "signed": false,')
+    path.write_text(text, encoding="utf-8")
+
+
+def _edited(change: Callable[[Json], object]) -> Callable[[Path], None]:
+    def edit(run: Path) -> None:
+        _handover(run)
+        data = _manifest(run)
+        change(data)
+        (run / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [
+        ("approval-keys-kept", "is a signed manifest"),
+        ("duplicate-signed", "a key is in the manifest two times"),
+        ("extra-key", "is not a hand-over manifest"),
+        ("missing-key", "is not a hand-over manifest"),
+    ],
+)
+def test_handover_replaces_only_a_real_handover_manifest(
+    tmp_path: Path, sync: Path, case: str, match: str
+) -> None:
+    run = _make_run(tmp_path / case)
+    if case == "approval-keys-kept":
+        assert approve(run.parents[1], run) == 0
+    edits: dict[str, Callable[[Path], None]] = {
+        "approval-keys-kept": _signed_false_with_approval_keys,
+        "duplicate-signed": _duplicate_signed,
+        "extra-key": _edited(lambda d: d.update(note="x")),
+        "missing-key": _edited(lambda d: d.pop("files")),
+    }
+    edits[case](run)
+    _set_copy_to(run.parents[1], str(sync / "phone"))
+    _refused(run, match, copy=sync)

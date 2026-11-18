@@ -247,7 +247,7 @@ Each command accepts `--repo PATH` and `--json`. Exit codes: 0 = no errors,
 - **A signed result stays.** `--handover` refuses a run that has a signed
   manifest.
 - **The copy to your phone.** If `[handover] copy_to` in `facts.toml` names
-  a folder that your computer syncs to your phone, darzi copies the three
+  a folder that your computer syncs to your phone, darzi copies the output
   files to `<copy_to>/<run folder name>/`. It copies nothing else: no
   manifest, no `run.yaml`, no job post, no answers and no facts. The folder
   must exist and must be outside the data root. A relative path is relative

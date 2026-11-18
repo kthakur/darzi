@@ -158,6 +158,45 @@ class _Passed:
     settings: dict[str, Any]
 
 
+def _plain_run_path(run_dir: Path) -> Path:
+    """Return `run_dir` in its plain form, or raise InputError (exit code 2).
+
+    The path `.` alone (`facts finalize .` inside the run folder) becomes the
+    real path of the current folder, so its name is the real folder name.
+    Each other path with a `.` or `..` part, or with the name "", "." or "..",
+    is refused before anything is read. Such a path can name the run folder,
+    but the folder name, the commit and the copy would then use the wrong
+    folder.
+    """
+    if run_dir == Path("."):
+        try:
+            run_dir = run_dir.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise InputError(f"cannot read the current folder: {exc}.") from exc
+    if run_dir.name in ("", ".", "..") or any(
+        part in (".", "..") for part in run_dir.parts
+    ):
+        raise InputError(
+            f"{run_dir} is not a plain run path: it has a . or .. part. Give "
+            f"the run folder as {APPLICATIONS}/<run> of the data root."
+        )
+    return run_dir
+
+
+def _run_folder(repo: Path, run_dir: Path) -> Path:
+    """Return the one real path of the run folder that finalize uses.
+
+    Raises InputError unless `run_dir` is a real folder `applications/<run>`
+    of `repo` (see `_refuse_other_root()`). Each later step uses the returned
+    path, so the build, the commit and the copy use the same folder.
+    """
+    _refuse_other_root(repo, run_dir)
+    try:
+        return run_dir.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise InputError(f"cannot read the path of {run_dir}: {exc}.") from exc
+
+
 def _refuse_other_root(repo: Path, run_dir: Path) -> None:
     """Raise InputError unless `run_dir` is `applications/<name>` of `repo`.
 
@@ -211,8 +250,9 @@ def finalize(
     objects. `renderer_for`, `count_pages` and `office_ready` change only how
     the files are built, never the approval.
 
-    Raises InputError (exit code 2) first when `run_dir` is not a real folder
-    `applications/<run>` of `repo`. Raises Refused (exit code 1) when the run
+    Raises InputError (exit code 2) first when `run_dir` is not plain (a `.`
+    or `..` part) or is not a real folder `applications/<run>` of `repo`.
+    Raises Refused (exit code 1) when the run
     is submitted, another finalize
     holds the lock, the run is not approved, the review cannot show a part of
     it, `facts check` has an error, LibreOffice is absent, or a file fails;
@@ -220,9 +260,11 @@ def finalize(
     RenderError (exit code 1) when the renderer fails; and InputError (exit
     code 2) for invalid input.
     """
-    # Step 1: facts.toml and run.yaml. A submitted run is never changed.
+    # Step 1: a plain run path, facts.toml and run.yaml. From here on,
+    # `run_dir` is the one real path of the run folder.
+    run_dir = _plain_run_path(run_dir)
     config = load_config(repo)
-    _refuse_other_root(repo, run_dir)
+    run_dir = _run_folder(repo, run_dir)
     _refuse_links(run_dir)
     meta = load_meta(run_dir)
     status: Any = meta.get("status")
@@ -321,19 +363,24 @@ def finalize_handover(
     `unreviewable()`; and after the commit the output files are copied to
     `<copy_to>/<run folder name>/` when copy_to is set.
 
-    Raises InputError (exit code 2) for invalid input, a run folder that is
-    not in the data root, a link, or a copy_to folder that fails a test;
+    Raises InputError (exit code 2) for invalid input, a run path that is not
+    plain, a run folder that is not in the data root, a link, or a copy_to
+    folder that fails a test;
     Refused (exit code 1) for each refusal; CopyFailed (a Refused) when the
     copy fails after the commit; RoundTripFailed and RenderError as finalize.
     """
-    # Steps 1 to 3: facts.toml, the binding to the data root, the links.
+    # Steps 1 to 3: a plain run path, facts.toml, the binding to the data
+    # root, the links. From here on, `run_dir` is the one real path.
+    run_dir = _plain_run_path(run_dir)
     config = load_config(repo)
-    _refuse_other_root(repo, run_dir)
+    run_dir = _run_folder(repo, run_dir)
     _refuse_links(run_dir)
-    # Step 4: the copy folder, before anything changes.
+    # Step 4: the copy folder, before anything changes. The sub-folder name
+    # is the manifest key `run`: the name of the real run folder.
     copy_dir = copy_folder(repo, config.handover)
+    target: Path | None = None
     if copy_dir is not None:
-        _refuse_copy_target(copy_dir / run_dir.name, [])
+        target = _copy_target(copy_dir, run_target(run_dir))
     # Step 5: the status.
     _refuse_status(run_dir, load_meta(run_dir))
     with locked(run_dir, Refused):
@@ -344,10 +391,10 @@ def finalize_handover(
         _refuse_signed_manifest(run_dir)
         # Step 8: read the inputs ONE time. Each later step uses `run`.
         run = load_run(run_dir)
-        if copy_dir is not None:
+        if target is not None:
             stem = _file_stem(run.tailored)
             names = [f"{stem}{end}" for end in COPY_SUFFIXES]
-            _refuse_copy_target(copy_dir / run_dir.name, names)
+            _refuse_copy_target(target, names)
         # Step 9: no approval is read on this path.
         # Step 10: refuse a part that the checks cannot read.
         hidden = unreviewable(run.tailored)
@@ -387,12 +434,11 @@ def finalize_handover(
         done = _build_and_commit(
             passed, renderer, count_pages, office_ready, today, {"signed": False}
         )
-        if copy_dir is None:
+        if copy_dir is None or target is None:
             return done
         # Step 15: the copy, after the commit.
-        target = copy_dir / run_dir.name
         try:
-            _copy_files(run_dir, done.manifest["files"], target)
+            _copy_files(run_dir, done.manifest["files"], target, copy_dir)
         except (OSError, InputError) as exc:
             raise CopyFailed(
                 f"the run is finalized and its files are in {run_dir / OUT}/, but "
@@ -416,30 +462,42 @@ def _refuse_status(run_dir: Path, meta: dict[str, Any]) -> None:
 def _refuse_signed_manifest(run_dir: Path) -> None:
     """Raise Refused unless the run has no manifest or a hand-over manifest.
 
-    A manifest that says `"signed": true`, or that cannot be read as a JSON
-    object with `"signed": false`, is refused. So a hand-over never replaces
-    a signed result.
+    A hand-over manifest is a JSON object with no duplicate key, exactly the
+    keys of `HANDOVER_MANIFEST_KEYS`, and `"signed": false`. Each other
+    manifest is refused: a signed one, one with `signed` edited to false that
+    keeps an approval key, one with a duplicate key, and one with an extra or
+    a missing key. So a hand-over never replaces a signed result.
     """
+    # form.py imports this module, so the import of its hook is here.
+    from darzi.runs.form import _unique_keys  # pyright: ignore[reportPrivateUsage]
+
     path = run_dir / MANIFEST
     if not exists(path):
         return
     try:
-        data: Any = json.loads(path.read_bytes().decode("utf-8"))
+        data: Any = json.loads(
+            path.read_bytes().decode("utf-8"), object_pairs_hook=_unique_keys
+        )
     except (OSError, ValueError, RecursionError) as exc:
         raise Refused(
             f"{path} cannot be read: {exc}. finalize --handover does not replace "
             "a manifest that it cannot read. Ask the owner what to do."
         ) from exc
-    signed: Any = data.get("signed") if isinstance(data, dict) else None
-    if signed is True:
+    keys: frozenset[str] = frozenset()
+    signed: Any = None
+    if isinstance(data, dict):
+        manifest: dict[str, Any] = data
+        keys, signed = frozenset(manifest), manifest.get("signed")
+    if signed is True or keys & (SIGNED_FIELDS - HANDOVER_FIELDS):
         raise Refused(
             f"{path} is a signed manifest. A hand-over never replaces a signed "
             f"result. The signed files are in {run_dir / OUT}/."
         )
-    if signed is not False:
+    if signed is not False or keys != HANDOVER_MANIFEST_KEYS:
         raise Refused(
-            f"{path} is not a hand-over manifest (no signed: false). "
-            "finalize --handover does not replace it. Ask the owner what to do."
+            f"{path} is not a hand-over manifest (signed: false and exactly the "
+            "keys of a hand-over manifest). finalize --handover does not replace "
+            "it. Ask the owner what to do."
         )
 
 
@@ -548,15 +606,52 @@ def _refuse_copy_target(target: Path, names: list[str]) -> None:
             )
 
 
-def _copy_files(run_dir: Path, files: list[dict[str, Any]], target: Path) -> None:
+def _copy_target(copy_dir: Path, name: str) -> Path:
+    """Return the tested run sub-folder `<copy_dir>/<name>`, or raise InputError.
+
+    `name` is the name of the real run folder (the manifest key `run`). A name
+    "", "." or ".." is refused, and the resolved parent of the sub-folder must
+    be the resolved `copy_dir`.
+    """
+    if name in ("", ".", ".."):
+        raise InputError(
+            f"the run folder name {name!r} is not a plain folder name. darzi "
+            "copies only into <copy_to>/<run>. Pass the run folder as "
+            f"{APPLICATIONS}/<run>."
+        )
+    target = copy_dir / name
+    _refuse_copy_target(target, [])
+    _refuse_outside(target, copy_dir)
+    return target
+
+
+def _refuse_outside(target: Path, copy_dir: Path) -> None:
+    """Raise InputError unless the resolved parent of `target` is `copy_dir`."""
+    try:
+        inside = target.resolve().parent == copy_dir.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise InputError(f"cannot read the path of {target}: {exc}.") from exc
+    if not inside:
+        raise InputError(
+            f"{target} is not a folder directly in the copy_to folder {copy_dir}. "
+            "darzi copies only into <copy_to>/<run>."
+        )
+
+
+def _copy_files(
+    run_dir: Path, files: list[dict[str, Any]], target: Path, copy_dir: Path
+) -> None:
     """Copy the output files that `files` lists into the folder `target`.
 
     Only the files of the manifest are copied: never the manifest, run.yaml,
-    the job post, the answers or a fact file. Each file is read one time, its
+    the job post, the answers or a fact file. Before the first write, the
+    resolved parent of `target` must be the resolved `copy_dir`. Each file is
+    read one time, its
     hash is tested against the manifest, and it is written with a temporary
     file and one rename. A file of the same name is replaced; other files in
     `target` are not touched. Raises OSError or InputError.
     """
+    _refuse_outside(target, copy_dir)
     if not exists(target) and not target.is_symlink():
         target.mkdir()
     _refuse_copy_target(target, [Path(item["path"]).name for item in files])
@@ -588,6 +683,12 @@ def _sha256(path: Path) -> str:
 # The approval fields of a manifest: exactly one of these two key sets.
 SIGNED_FIELDS = frozenset(("signed", "approval_hash", "signer_fingerprint"))
 HANDOVER_FIELDS = frozenset(("signed",))
+# The keys of each manifest that `_build_and_commit()` writes, except the
+# approval fields; and the complete key set of a hand-over manifest.
+MANIFEST_BASE_KEYS = frozenset(
+    ("schema_version", "run", "date", "renderer", "print_settings", "files")
+)
+HANDOVER_MANIFEST_KEYS = MANIFEST_BASE_KEYS | HANDOVER_FIELDS
 
 
 def _check_signing(signing: dict[str, Any]) -> None:

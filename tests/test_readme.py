@@ -93,7 +93,7 @@ def test_the_readme_has_the_hand_over_path() -> None:
         "**`facts fill-plan` refuses them.**",
         "They are for you to use by hand.",
         "`facts check` had no error, and the round-trip check passed on each file.",
-        "copies the three files to `<copy_to>/<run folder name>/`",
+        "copies the output files to `<copy_to>/<run folder name>/`",
         "It copies nothing else: no manifest,",
         "The signed path makes no copy.",
     ):
