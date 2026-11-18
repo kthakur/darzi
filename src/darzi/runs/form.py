@@ -51,7 +51,7 @@ from darzi.facts.repo import InputError, read_yaml
 from darzi.facts.validate import Finding
 from darzi.paths import exists, is_dir, is_file
 from darzi.render.word import letter_docx, resume_docx
-from darzi.runs.approve import run_is_approved
+from darzi.runs.approve import run_is_approved, safe
 from darzi.runs.finalize import (
     LETTER_WORD,
     MANIFEST_SCHEMA_VERSION,
@@ -532,8 +532,8 @@ def apply_url(meta: dict[str, Any], run_dir: Path, form: FormSettings | None) ->
 
     Raises InputError (exit code 2) when facts.toml has no `[form]` table, and
     FormRefused (exit code 1) when the link is absent, is not a plain http or
-    https link to a host name, or its host is a blocked host or a sub-domain
-    of one.
+    https link to a host name, its host is a blocked host or a sub-domain of
+    one, or it has a character that the text plan would print as "?".
     """
     if form is None:
         raise InputError(
@@ -549,18 +549,24 @@ def apply_url(meta: dict[str, Any], run_dir: Path, form: FormSettings | None) ->
         )
     if not isinstance(url, str):
         raise FormRefused(f"{where}: apply_url is not a text. Write the link.")
+    not_plain = FormRefused(
+        f"{where}: apply_url must be a plain http or https link to a host "
+        "name, with no user name, space, backslash or control character."
+    )
     host = _url_host(url)
     if host is None:
-        raise FormRefused(
-            f"{where}: apply_url must be a plain http or https link to a host "
-            "name, with no user name, space, backslash or control character."
-        )
+        raise not_plain
     for blocked in form.blocked_hosts:
         if host == blocked or host.endswith("." + blocked):
             raise FormRefused(
                 f"the host of apply_url is {host}, which [form] blocked_hosts "
                 "blocks. No form fill there: the owner applies by hand."
             )
+    # The text plan prints the link through `safe()`. A character that `safe()`
+    # shows as "?" (private use, a variation selector, a blank-looking letter)
+    # would make the printed link differ from the true link: refuse it.
+    if safe(url) != url:
+        raise not_plain
     return url
 
 

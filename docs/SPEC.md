@@ -253,6 +253,9 @@ Rules:
 - "Approved" means: the signature is valid, and the hash in the record equals
   the hash of the current content. `export`, `finalize` and `fill-plan` use the
   same function.
+- An approval counts only for a run that is a direct part of `applications/`,
+  or a selection that is a direct part of `selections/`, of the data root whose
+  `facts.toml` and `allowed_signers` are used.
 - `finalize` writes the signer's key fingerprint into `manifest.json`.
   `doctor` prints it.
 

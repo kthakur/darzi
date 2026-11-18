@@ -590,21 +590,51 @@ def _plan_lines(plan: dict[str, Any]) -> list[str]:
     lines += [f"  {key}: {one_line(value)}" for key, value in info.items()]
     lines += ["", f"Answers ({ANSWERS_NOTE}):"]
     lines += [
-        f"  {a['id']}: {one_line(a['question'])} -> {one_line(a['answer'])}"
+        f"  {a['id']}: {_quoted(a['question'])} -> {_quoted(a['answer'])}"
         for a in plan["answers"]
     ]
     lines += ["", "Empty answers (leave the field empty, tell the owner):"]
     # Each id and question is from answers.yaml: not covered by the signature.
-    lines += [f"  {a['id']}: {one_line(a['question'])}" for a in plan["empty_answers"]]
-    lines += ["", "Rules:"] + [f"  - {rule}" for rule in plan["rules"]]
+    lines += [f"  {a['id']}: {_quoted(a['question'])}" for a in plan["empty_answers"]]
+    rules = [*plan["rules"], *TEXT_PLAN_RULES]
+    lines += ["", "Rules:"] + [f"  - {rule}" for rule in rules]
     unsigned: dict[str, Any] = plan["not_signed"]
     lines += ["", "NOT covered by the signature:", f"  {unsigned['note']}"]
-    lines += [f"  {key}: {one_line(unsigned[key])}" for key in ("company", "role")]
-    lines += [f"  apply_url: {one_line(unsigned['apply_url'])}"]
+    lines += [
+        f"  {key}: {_quoted(unsigned[key])}" for key in ("company", "role", "apply_url")
+    ]
     letter = plan["cover_letter"]
     lines += ["", "Cover letter (approved):"]
-    lines += ["  (none)"] if letter is None else [f"  {x}" for x in letter.split("\n")]
+    if letter is None:
+        lines += ["  (none)"]
+    else:
+        # darzi writes the mark in front of each letter line, so that no line
+        # of the letter can have the form of a line of the plan.
+        lines += [f"{LETTER_MARK}{x}" for x in letter.split("\n")]
     return lines
+
+
+# The mark in front of each line of the cover letter in the text plan.
+LETTER_MARK = "  | "
+# Rules of the text plan only. The --json plan has the true values: no quotes
+# and no marks.
+TEXT_PLAN_RULES = (
+    f'darzi writes "{LETTER_MARK.strip()} " in front of each line of the cover '
+    "letter: do not paste this mark.",
+    "A value in double quotes is from run.yaml or answers.yaml: type it without "
+    'the outer quotes, and type \\" as " and \\\\ as \\.',
+)
+
+
+def _quoted(value: Any) -> str:
+    """Return `value` in one line, in double quotes, for the text plan.
+
+    The one fixed rule: a backslash goes before each double quote and each
+    backslash in the value. So the value ends only at the closing quote, and a
+    wrapped tail of a long value cannot look like a key line of the plan.
+    """
+    text = one_line(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
 
 
 def _submitted(run: Path, repo_arg: Path | None, as_json: bool) -> int:

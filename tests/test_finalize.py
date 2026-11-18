@@ -983,3 +983,45 @@ def test_a_run_that_became_submitted_before_the_lock(
         k: v for k, v in before.items() if k != "run.yaml"
     }
     assert not (run_dir / "manifest.json").exists()
+
+
+# --- A character that a Word file cannot hold (F-3) -------------------------------
+
+# The XML 1.0 control characters at which str.splitlines() starts a new line.
+WORD_BAD = [chr(c) for c in (0x0B, 0x0C, 0x1C, 0x1D, 0x1E)]
+
+
+@pytest.mark.parametrize("where", ["personalInfo.phone", "bullet"])
+@pytest.mark.parametrize("bad", WORD_BAD, ids=[f"U+{ord(c):04X}" for c in WORD_BAD])
+def test_a_character_that_word_cannot_hold(
+    tmp_path: Path,
+    fake_tools: PdfCli,
+    capsys: pytest.CaptureFixture[str],
+    where: str,
+    bad: str,
+) -> None:
+    run = _make_run(tmp_path)
+    path = run / "tailored.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if where == "bullet":
+        index = next(
+            i for i, e in enumerate(data["workExperience"]) if e.get("description")
+        )
+        data["workExperience"][index]["description"][0] += f"{bad}more"
+        where = f"workExperience[{index}].description[0]"
+    else:
+        data["personalInfo"]["phone"] += bad
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert approve(run.parents[1], run) == 0
+    capsys.readouterr()
+    before = _tree(run.parents[1])
+    assert _cli(run) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1, err
+    assert f"{where} has the character U+{ord(bad):04X}, which a Word file" in err
+    assert "Remove it from tailored.json, then approve again." in err
+    # The work folder is removed; nothing in the data root changed.
+    assert _tree(run.parents[1]) == before
+    assert not (run / "manifest.json").exists()
