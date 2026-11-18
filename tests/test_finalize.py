@@ -887,12 +887,15 @@ def test_a_failed_removal_of_the_old_manifest(
     assert _tree(run_dir) == before
 
 
-def test_there_is_no_handover_option(run_dir: Path) -> None:
-    before = _tree(run_dir)
-    with pytest.raises(SystemExit) as info:
-        _cli(run_dir, "--handover")
-    assert info.value.code == 2
-    assert _tree(run_dir) == before
+def test_the_handover_option_writes_an_unsigned_manifest(
+    run_dir: Path, fake_tools: PdfCli
+) -> None:
+    # W-13: --handover reaches the hand-over gate, also on an approved run.
+    assert _cli(run_dir, "--handover") == 0
+    manifest = _manifest(run_dir)
+    assert manifest["signed"] is False
+    assert "approval_hash" not in manifest
+    assert "signer_fingerprint" not in manifest
 
 
 def test_finalize_has_no_parameter_that_skips_the_approval() -> None:

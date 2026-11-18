@@ -90,8 +90,7 @@ def test_each_facts_command_in_the_text_is_built() -> None:
     assert {"fill-plan", "submitted", "export", "render", "fit"} <= used
 
 
-def test_the_text_has_the_fit_step_and_no_hand_over_path() -> None:
-    assert "--handover" not in APPLY
+def test_the_text_has_the_fit_step() -> None:
     step2 = APPLY.split("\n2. **", 1)[1].split("\n3. **", 1)[0]
     flat = " ".join(step2.split())
     assert flat.startswith("Rate the fit.**")
@@ -113,9 +112,51 @@ def test_the_fit_step_comes_after_the_job_post_and_before_the_job_type() -> None
     assert titles[:3] == ["Save the job post.", "Rate the fit.", "Choose the job type."]
 
 
-def test_the_steps_are_1_to_12() -> None:
+def test_the_steps_are_1_to_12_then_the_hand_over_steps_9_to_11() -> None:
     steps = [int(n) for n in re.findall(r"^(\d+)\. \*\*", APPLY, flags=re.MULTILINE)]
-    assert steps == list(range(1, 13))
+    assert steps == [*range(1, 13), 9, 10, 11]
+    desktop = APPLY.split("\n## Desktop path\n", 1)[1].split("\n## ", 1)[0]
+    assert "--handover" not in desktop
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_step_8_asks_the_owner_which_path() -> None:
+    step8 = _flat(APPLY.split("\n8. **", 1)[1].split("\n## Desktop path", 1)[0])
+    assert step8.startswith("Show the owner and ask for the path.**")
+    assert "Ask the owner which path to take" in step8
+
+
+def test_the_rules_of_the_hand_over_path() -> None:
+    rules = _flat(APPLY.split("## Rules for each step", 1)[1].split("\n## ", 1)[0])
+    for text in (
+        "A chat message is never an approval.",
+        "It selects the hand-over path at most.",
+        "Run `facts finalize RUN --handover` only when the owner chose the "
+        "hand-over path in this conversation.",
+        "On the hand-over path, never run `facts fill-plan` and never open an "
+        "employer's form.",
+        "If the owner approves later at the desktop, run `facts finalize RUN` "
+        "(without `--handover`)",
+    ):
+        assert text in rules, text
+
+
+def test_the_hand_over_steps() -> None:
+    part = _flat(APPLY.split("\n## Hand-over path\n", 1)[1])
+    for text in (
+        "only when the owner chose the hand-over path in this conversation",
+        "Run `facts finalize RUN --handover`.",
+        'writes `RUN/manifest.json` with `"signed": false`',
+        "Say that the files are not signed.",
+        "If `[handover] copy_to` is set in `facts.toml`",
+        "Do not run `facts fill-plan` and do not open the form",
+        "run `facts submitted RUN`.",
+    ):
+        assert text in part, text
+    assert "facts approve" not in part
 
 
 def test_the_draft_step_names_the_margin_range() -> None:

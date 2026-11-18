@@ -62,7 +62,12 @@ from darzi.runs.approve import (
     sign_problem,
     unreviewable,
 )
-from darzi.runs.finalize import Refused, RoundTripFailed, finalize
+from darzi.runs.finalize import (
+    Refused,
+    RoundTripFailed,
+    finalize,
+    finalize_handover,
+)
 from darzi.runs.form import (
     ANSWERS_NOTE,
     FormRefused,
@@ -178,6 +183,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="build the files of an approved run in out/ and write manifest.json",
     )
     finalize_cmd.add_argument("run", type=Path, help="run folder with approval.json")
+    finalize_cmd.add_argument(
+        "--handover",
+        action="store_true",
+        help=(
+            "make the files with NO approval, for the owner to use by hand: the "
+            'manifest says "signed": false and fill-plan refuses the run. Only '
+            "when the owner chose the hand-over path"
+        ),
+    )
     sub.add_parser("answers", parents=[common], help="check answers.yaml")
     plan_cmd = sub.add_parser(
         "fill-plan",
@@ -239,7 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "render":
         return _render(args.run, args.repo, args.draft, args.json)
     if command == "finalize":
-        return _finalize(args.run, args.repo, args.json)
+        return _finalize(args.run, args.repo, args.json, args.handover)
     if command == "answers":
         return _answers(args.repo, args.json)
     if command == "fill-plan":
@@ -428,13 +442,15 @@ def office_present() -> bool:
     return find_soffice() is not None
 
 
-def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+def _finalize(run: Path, repo_arg: Path | None, as_json: bool, handover: bool) -> int:
     # A refusal, a failed render or a round-trip finding gives exit code 1.
     # Invalid input gives exit code 2. Each refusal leaves the run folder as
-    # it was (docs/SPEC.md sections 7 and 8).
+    # it was (docs/SPEC.md sections 7 and 8). Only the flag --handover calls
+    # the hand-over gate; it is the one way to reach it.
+    gate = finalize_handover if handover is True else finalize
     try:
         repo = find_repo(repo_arg)
-        done = finalize(
+        done = gate(
             repo,
             run,
             renderer_for=resume_matcher.from_settings,
@@ -452,7 +468,7 @@ def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
         return 1 if isinstance(exc, Refused | RenderError) else 2
     manifest = done.manifest
     if as_json:
-        data = {
+        data: dict[str, Any] = {
             "schema_version": JSON_SCHEMA_VERSION,
             "command": "finalize",
             "target": str(run),
@@ -460,6 +476,9 @@ def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
             "manifest": manifest,
             "warnings": done.warnings,
         }
+        if handover:
+            copied = done.copied_to
+            data["copied_to"] = None if copied is None else str(copied)
         print(json.dumps(data, indent=2))
         return 0
     for item in manifest["files"]:
@@ -470,6 +489,17 @@ def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
         )
     for warning in done.warnings:
         print(f"warning {warning}")
+    if manifest["signed"] is not True:
+        print(
+            _line(
+                f"facts finalize: wrote {run / 'manifest.json'} (NOT signed: "
+                "hand-over files for the owner to use by hand; fill-plan refuses "
+                "them). Status: finalized."
+            )
+        )
+        if done.copied_to is not None:
+            print(_line(f"facts finalize: copied the files to {done.copied_to}"))
+        return 0
     print(
         _line(
             f"facts finalize: wrote {run / 'manifest.json'} (signed by "

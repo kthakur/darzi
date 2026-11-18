@@ -18,8 +18,9 @@ You send a job link to a coding agent. The agent uses `facts` for each step:
    PDF and Word files, and the agent fills the employer's form in your
    browser. It stops before Submit. You submit.
 
-A second path, the hand-over path (darzi makes the files with no signature,
-and you apply by hand), comes in a later version.
+When you are away from your desktop, you can choose the hand-over path:
+darzi makes the same files after the same checks, with no signature, and you
+apply by hand (see "The hand-over files" below).
 
 ## What you need
 
@@ -78,6 +79,9 @@ backend_url = "http://127.0.0.1:8000"
 
 [form]
 blocked_hosts = ["jobs.example.com"]
+
+[handover]
+copy_to = ""        # optional: a folder that syncs to your phone
 ```
 
 ### 3. The approval key
@@ -152,11 +156,24 @@ never asks for a passphrase.
    rating. Then it chooses the job type, runs `facts export`, and writes the
    tailored résumé and the cover letter.
 3. `facts check` and `facts render --draft` must pass. The agent sends you a
-   short summary.
+   short summary and asks which path you want.
+
+The desktop path:
+
 4. You run `facts approve RUN` in a terminal on your desktop.
 5. The agent runs `facts finalize RUN` and `facts fill-plan RUN`, fills the
    form, and stops before Submit. You submit. Then the agent runs
    `facts submitted RUN`.
+
+The hand-over path, when you are away from your desktop:
+
+4. You tell the agent that you want the hand-over path. "Looks good" in a
+   chat selects this path at most. It is never an approval.
+5. The agent runs `facts finalize RUN --handover` and sends you the files and
+   the apply link. It does not run `facts fill-plan` and does not open the
+   form. You apply by hand. Then the agent runs `facts submitted RUN`.
+6. If you approve later at your desktop, the agent runs `facts finalize RUN`
+   (without `--handover`). The signed files replace the hand-over files.
 
 The agent reads the full steps with `facts workflow apply`.
 
@@ -177,6 +194,7 @@ Each command accepts `--repo PATH` and `--json`. Exit codes: 0 = no errors,
 | `facts render` | Renders a draft PDF outside the run folder and prints the page count |
 | `facts approve` | Shows the full text and signs your approval. You only. |
 | `facts finalize` | Makes the final PDF and Word files and `manifest.json` |
+| `facts finalize --handover` | Makes the same files with no signature, for you to use by hand |
 | `facts answers` | Checks `answers.yaml` |
 | `facts fill-plan` | Prints the only data that a form fill can use |
 | `facts submitted` | Records that you submitted the application |
@@ -213,6 +231,28 @@ Each command accepts `--repo PATH` and `--json`. Exit codes: 0 = no errors,
 - **The binding to the data root.** A run or a selection counts only inside
   the data root whose `allowed_signers` darzi uses. A copy in another folder
   is not approved.
+
+## The hand-over files
+
+`facts finalize RUN --handover` writes `"signed": false` in `manifest.json`.
+
+- **Not signed.** No approval covers them. The manifest has no approval hash
+  and no signer fingerprint.
+- **`facts fill-plan` refuses them.** So the agent cannot put them into a
+  form. They are for you to use by hand.
+- **The checks still ran.** `facts check` had no error, and the round-trip
+  check passed on each file. darzi also ran the refusals of the approval step
+  and the contact and privacy rules on the links, the project and education
+  locations and the section names, which `facts check` does not read.
+- **A signed result stays.** `--handover` refuses a run that has a signed
+  manifest.
+- **The copy to your phone.** If `[handover] copy_to` in `facts.toml` names
+  a folder that your computer syncs to your phone, darzi copies the three
+  files to `<copy_to>/<run folder name>/`. It copies nothing else: no
+  manifest, no `run.yaml`, no job post, no answers and no facts. The folder
+  must exist and must be outside the data root. A relative path is relative
+  to the data root, and `~/` is your home folder. The signed path makes no
+  copy.
 
 ## Limits of each step
 

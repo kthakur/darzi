@@ -2,7 +2,8 @@
 
 This module reads only `<data root>/facts.toml`. It reads no environment
 variable. Each work item adds the section that it needs: `[owner]` (W-4),
-`[approval]` (W-5), `[render]` (W-6), `[form]` (W-9) and `[fit]` (W-12).
+`[approval]` (W-5), `[render]` (W-6), `[form]` (W-9), `[fit]` (W-12) and
+`[handover]` (W-13).
 """
 
 import math
@@ -110,6 +111,18 @@ def exact(value: float) -> Fraction:
 
 
 @dataclass(frozen=True)
+class HandoverSettings:
+    """The `[handover]` settings. `copy_to` None means: not set.
+
+    `copy_to` is the text of facts.toml: relative to the data root, or with a
+    leading `~/`. The module `darzi.runs.finalize` resolves and tests it, and
+    only `facts finalize RUN --handover` uses it.
+    """
+
+    copy_to: str | None = None
+
+
+@dataclass(frozen=True)
 class Config:
     """The settings of one data root.
 
@@ -121,6 +134,7 @@ class Config:
     render: RenderSettings | None = None
     form: FormSettings | None = None
     fit: FitSettings = FitSettings()
+    handover: HandoverSettings = HandoverSettings()
 
 
 # One label of an ASCII host name (RFC 1123): letters, digits and hyphens.
@@ -182,7 +196,10 @@ def load_config(repo: Path) -> Config:
     value of these sections is not a non-empty string, or when `[form]` has no
     `blocked_hosts` list of plain host names. An absent `[fit]` table or key
     gives the default limit; a `[fit]` value that is not a number from 0 to
-    1, or a `yellow` above `green`, raises InputError.
+    1, or a `yellow` above `green`, raises InputError. An absent `[handover]`
+    table, an absent `copy_to` or `copy_to = ""` means: not set; a `[handover]`
+    that is not a table, or a `copy_to` that is not a text or holds only
+    spaces, raises InputError.
     """
     path = repo / FACTS_TOML
     try:
@@ -210,6 +227,7 @@ def load_config(repo: Path) -> Config:
         render=_render(path, data),
         form=_form(path, data),
         fit=_fit(path, data),
+        handover=_handover(path, data),
     )
 
 
@@ -343,3 +361,20 @@ def _fit(path: Path, data: dict[str, Any]) -> FitSettings:
             f"({values['green']}). Write a yellow that is not above green."
         )
     return FitSettings(green=values["green"], yellow=values["yellow"])
+
+
+def _handover(path: Path, data: dict[str, Any]) -> HandoverSettings:
+    section: Any = data.get("handover")
+    if section is None:
+        return HandoverSettings()
+    if not isinstance(section, dict):
+        raise InputError(f"{path}: handover must be a table. Write it as [handover].")
+    value: Any = section.get("copy_to")
+    if value is None or value == "":
+        return HandoverSettings()
+    if not isinstance(value, str) or not value.strip():
+        raise InputError(
+            f'{path}: [handover] copy_to must be the path of a folder, or "" '
+            "for no copy. Fix the copy_to."
+        )
+    return HandoverSettings(copy_to=value)
