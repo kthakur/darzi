@@ -66,7 +66,7 @@ from darzi.runs.runs import (
     write_atomic,
     write_status,
 )
-from darzi.runs.signing import run_target
+from darzi.runs.signing import in_data_root, run_target
 
 OUT = "out"
 WORK_NEW = ".finalize-new"
@@ -183,12 +183,10 @@ def _refuse_other_root(repo: Path, run_dir: Path) -> None:
     is a symbolic link is refused too.
     """
     try:
-        real = run_dir.resolve(strict=True)
-        applications = repo.resolve(strict=True) / APPLICATIONS
-        link = run_dir.is_symlink()
+        inside = in_data_root(repo, "run", run_dir)
     except (OSError, RuntimeError) as exc:
         raise InputError(f"cannot read the path of {run_dir}: {exc}.") from exc
-    if link or real.parent != applications:
+    if not inside:
         raise InputError(
             f"{run_dir} is not a run folder of the data root {repo}. finalize "
             f"works only on a real folder {APPLICATIONS}/<run> of the data root "

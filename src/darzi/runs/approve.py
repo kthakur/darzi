@@ -297,6 +297,7 @@ def run_is_approved(
         run_target(run_dir),
         run_dir / APPROVAL,
         content_hash(run.tailored, run.letter),
+        target_path=run_dir,
     )
 
 
@@ -341,6 +342,8 @@ def record_and_sign(
     record: Path,
     digest: str,
     day: dt.date,
+    *,
+    target_path: Path,
 ) -> Verdict:
     """Write a new approval record, sign it, and verify the new pair.
 
@@ -372,7 +375,9 @@ def record_and_sign(
         written = record.read_bytes()
     except OSError:
         written = b""
-    verdict = verify_approval(repo, settings, kind, target, record, digest)
+    verdict = verify_approval(
+        repo, settings, kind, target, record, digest, target_path=target_path
+    )
     if written != data or not verdict.approved:
         _clean_up(record, sig)
         reason = verdict.reason if written == data else "the record changed"

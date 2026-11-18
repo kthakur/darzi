@@ -635,7 +635,13 @@ def test_key_path_uses_the_user_database(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_an_unknown_kind_is_not_approved(root: Path) -> None:
     verdict = verify_approval(
-        root, _settings(root), "other", "ux", _ux_record(root), _ux_hash(root)
+        root,
+        _settings(root),
+        "other",
+        "ux",
+        _ux_record(root),
+        _ux_hash(root),
+        target_path=root / "selections" / "ux.yaml",
     )
     _not(verdict, "is not a kind of approval")
 

@@ -81,6 +81,32 @@ def signed_copy(tmp_path: Path) -> Path:
     return root
 
 
+def signature_verifies(root: Path, record: Path) -> bool:
+    """Return True when the key list of `root` accepts the signature of `record`.
+
+    This checks only the signature, not the rules of `verify_approval()`.
+    """
+    result = subprocess.run(
+        [
+            SSH_KEYGEN,
+            "-Y",
+            "verify",
+            "-f",
+            str(root / "allowed_signers"),
+            "-I",
+            SIGNER,
+            "-n",
+            NAMESPACE,
+            "-s",
+            str(sig_path(record)),
+        ],
+        input=record.read_bytes(),
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def sign_bytes(
     key: Path, record: Path, data: bytes, namespace: str = NAMESPACE
 ) -> None:

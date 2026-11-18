@@ -6,6 +6,12 @@ An approval is two files: a small JSON record and its OpenSSH signature
 It fails closed: each absent file or setting, each read error and each error of
 `ssh-keygen` gives "not approved", never an exception.
 
+`in_data_root()` is the one rule that binds a target to its data root: a
+selection must be `selections/<name>.yaml` and a run must be
+`applications/<run>` of the same data root whose `facts.toml` and
+`allowed_signers` are used. `verify_approval()`, the approve steps and
+`finalize` all use it.
+
 The settings come only from `[approval]` in `<data root>/facts.toml`. No
 environment variable and no flag replaces them or skips the signature.
 
@@ -29,6 +35,7 @@ from typing import Any
 
 from darzi.config import Approval
 from darzi.paths import is_file
+from darzi.runs.runs import APPLICATIONS
 
 # The OpenSSH tool. macOS and the Linux distributions install it here.
 SSH_KEYGEN = "/usr/bin/ssh-keygen"
@@ -53,6 +60,13 @@ DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # first character is a letter or a digit, so a value cannot start with "-".
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]*")
 FINGERPRINT = re.compile(r"\bkey (SHA256:[A-Za-z0-9+/=]+)")
+SELECTIONS = "selections"
+# The folder of the data root that holds each kind of target.
+TARGET_FOLDERS = {"selection": SELECTIONS, "run": APPLICATIONS}
+TARGET_SHAPES = {
+    "selection": f"{SELECTIONS}/<name>.yaml",
+    "run": f"{APPLICATIONS}/<run>",
+}
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,39 @@ def selection_target(selection: Path) -> str:
 def run_target(run_dir: Path) -> str:
     """Return the `target` of a run record: the name of the run folder."""
     return run_dir.resolve().name
+
+
+def in_data_root(repo: Path, kind: str, path: Path) -> bool:
+    """Return True when `path` is a target of `kind` in the data root `repo`.
+
+    The real path of `path` (each symbolic link followed) must be a direct
+    child of the folder of `kind` (`selections` or `applications`) in the real
+    path of `repo`. A selection must also end with `.yaml`. A `path` that is a
+    symbolic link itself is not in the data root. Raise OSError or
+    RuntimeError when a path cannot be read.
+    """
+    folder = TARGET_FOLDERS.get(kind)
+    if folder is None:
+        return False
+    real = path.resolve(strict=True)
+    parent = repo.resolve(strict=True) / folder
+    if path.is_symlink() or real.parent != parent:
+        return False
+    return kind != "selection" or real.suffix == ".yaml"
+
+
+def target_problem(repo: Path, kind: str, path: Path) -> str:
+    """Return why `path` is not a target of `kind` in `repo`, or "" when it is."""
+    try:
+        if in_data_root(repo, kind, path):
+            return ""
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"cannot read the path of {path}: {exc}"
+    shape = TARGET_SHAPES.get(kind, "a known folder")
+    return (
+        f"{path} is not a {kind} of the data root {repo}. Only a real "
+        f"{shape} of the data root that holds the key list is permitted"
+    )
 
 
 def record_bytes(
@@ -250,9 +297,13 @@ def verify_approval(
     target: str,
     record: Path,
     current_hash: str,
+    *,
+    target_path: Path,
 ) -> Verdict:
     """Decide whether `record` approves the content with hash `current_hash`.
 
+    `target_path` is the selection file or the run folder. It must be in the
+    data root `repo` (`in_data_root()`); else the target is not approved.
     Approved means: `ssh-keygen` verifies the signature `<record>.sig` on the
     exact bytes of the record with the signer, the namespace and the
     `allowed_signers` file of `settings`; then the record has exactly the six
@@ -261,7 +312,7 @@ def verify_approval(
     This function does not raise for a bad file or setting.
     """
     try:
-        return _verify(repo, settings, kind, target, record, current_hash)
+        return _verify(repo, settings, kind, target, record, current_hash, target_path)
     except Exception:  # each unexpected error means "not approved"
         return _no("the approval cannot be verified")
 
@@ -273,9 +324,14 @@ def _verify(
     target: str,
     record: Path,
     current_hash: str,
+    target_path: Path,
 ) -> Verdict:
     if kind not in KINDS:
         return _no(f"{kind!r} is not a kind of approval")
+    # The target must be in the data root whose key list verifies the record.
+    problem = target_problem(repo, kind, target_path)
+    if problem:
+        return _no(problem)
     problem = settings_problem(repo, settings)
     if problem:
         return _no(problem)

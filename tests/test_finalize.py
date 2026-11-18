@@ -52,7 +52,14 @@ from darzi.runs.signing import record_bytes, run_target
 from .pdf_fakes import pdf_bytes
 from .render_fakes import FakeCli, fake_install, fake_renderer
 from .resume_pdf import pdf_lines
-from .signing_root import SIGNER, approve, make_key, sign_bytes, signed_copy
+from .signing_root import (
+    SIGNER,
+    approve,
+    make_key,
+    sign_bytes,
+    signature_verifies,
+    signed_copy,
+)
 
 RUN = "2026-11-17-acme-product-designer"
 DAY = dt.date(2026, 11, 18)
@@ -610,8 +617,11 @@ def _signed_by_a_second_root(tmp_path: Path, run: Path) -> Path:
     digest = content_hash(loaded.tailored, loaded.letter)
     data = record_bytes("run", run_target(run), DAY, digest, SIGNER)
     sign_bytes(key2, run / "approval.json", data)
-    # The key list of root 2 accepts the record: only the binding refuses it.
-    assert run_is_approved(root2, load_config(root2).approval, run, loaded).approved
+    # The key list of root 2 accepts the signature: only the binding refuses it.
+    assert signature_verifies(root2, run / "approval.json")
+    verdict = run_is_approved(root2, load_config(root2).approval, run, loaded)
+    assert not verdict.approved
+    assert "is not a run of the data root" in verdict.reason
     return root2
 
 
