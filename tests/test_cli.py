@@ -57,6 +57,7 @@ def test_each_spec_command_is_built_or_planned() -> None:
         "status",
         "approve",
         "render",
+        "finalize",
     }
     assert built | set(PLANNED) == SPEC_COMMANDS
     assert built.isdisjoint(PLANNED)

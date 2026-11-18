@@ -46,6 +46,7 @@ from darzi.facts.selection import (
 from darzi.facts.validate import Finding, validate
 from darzi.paths import exists, is_file
 from darzi.render import resume_matcher
+from darzi.render.pages import find_soffice, word_pages
 from darzi.render.port import Renderer, RenderError
 from darzi.runs.approve import (
     Ask,
@@ -58,6 +59,7 @@ from darzi.runs.approve import (
     sign_problem,
     unreviewable,
 )
+from darzi.runs.finalize import Refused, RoundTripFailed, finalize
 from darzi.runs.runs import (
     APPLICATIONS,
     APPROVAL,
@@ -76,7 +78,6 @@ JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "finalize": "W-8",
     "answers": "W-9",
     "fill-plan": "W-9",
     "submitted": "W-9",
@@ -149,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="render to a new temporary folder; write nothing in the run folder",
     )
+    finalize_cmd = sub.add_parser(
+        "finalize",
+        parents=[common],
+        help="build the files of an approved run in out/ and write manifest.json",
+    )
+    finalize_cmd.add_argument("run", type=Path, help="run folder with approval.json")
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -182,6 +189,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _approve(args.target, args.repo)
     if command == "render":
         return _render(args.run, args.repo, args.draft, args.json)
+    if command == "finalize":
+        return _finalize(args.run, args.repo, args.json)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -352,6 +361,62 @@ def _render(run: Path, repo_arg: Path | None, draft: bool, as_json: bool) -> int
                 "The run folder did not change."
             )
         )
+    return 0
+
+
+def office_present() -> bool:
+    """Return True when LibreOffice is at one of the paths of darzi.render.pages."""
+    return find_soffice() is not None
+
+
+def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    # A refusal, a failed render or a round-trip finding gives exit code 1.
+    # Invalid input gives exit code 2. Each refusal leaves the run folder as
+    # it was (docs/SPEC.md sections 7 and 8).
+    try:
+        repo = find_repo(repo_arg)
+        done = finalize(
+            repo,
+            run,
+            renderer_for=resume_matcher.from_settings,
+            count_pages=word_pages,
+            office_ready=office_present,
+            today=_today(),
+        )
+    except RoundTripFailed as exc:
+        findings = exc.findings
+        _print(_report_data("finalize", run, findings), findings, as_json, str(run))
+        print(_line(f"facts finalize: {exc}"), file=sys.stderr)
+        return 1
+    except InputError as exc:
+        print(_line(f"facts finalize: {exc}"), file=sys.stderr)
+        return 1 if isinstance(exc, Refused | RenderError) else 2
+    manifest = done.manifest
+    if as_json:
+        data = {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "command": "finalize",
+            "target": str(run),
+            "ok": True,
+            "manifest": manifest,
+            "warnings": done.warnings,
+        }
+        print(json.dumps(data, indent=2))
+        return 0
+    for item in manifest["files"]:
+        print(
+            _line(
+                f"{item['path']}: {item['pages']} pages, sha256 {item['sha256'][:12]}"
+            )
+        )
+    for warning in done.warnings:
+        print(f"warning {warning}")
+    print(
+        _line(
+            f"facts finalize: wrote {run / 'manifest.json'} (signed by "
+            f"{manifest['signer_fingerprint']}). Status: finalized."
+        )
+    )
     return 0
 
 

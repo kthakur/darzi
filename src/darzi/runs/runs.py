@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from darzi.facts.repo import InputError, read_yaml
-from darzi.paths import is_file
+from darzi.paths import is_file, write_atomic
 
 APPLICATIONS = "applications"
 JOB = "job.md"
@@ -131,6 +131,16 @@ def print_settings(run_dir: Path) -> dict[str, Any]:
     load_meta) or `print_settings` is not a mapping.
     """
     meta = load_meta(run_dir) if is_file(run_dir / RUN_YAML) else {}
+    return settings_of(meta, run_dir)
+
+
+def settings_of(meta: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """Return the PDF print settings from the `run.yaml` mapping `meta`.
+
+    This is `print_settings()` for a mapping that is already in memory.
+    `run_dir` is only for the message. Raises InputError when `print_settings`
+    is not a mapping.
+    """
     extra: Any = meta.get("print_settings") or {}
     if not isinstance(extra, dict):
         raise InputError(
@@ -138,3 +148,19 @@ def print_settings(run_dir: Path) -> dict[str, Any]:
             "Write it as keys and values, or remove it."
         )
     return {**DEFAULT_PRINT, **extra}
+
+
+def write_status(run_dir: Path, meta: dict[str, Any], status: str) -> None:
+    """Write `run.yaml` of `run_dir` again with `status` as its status.
+
+    `meta` is the mapping that `load_meta()` gave. Each other key keeps its
+    value and its place; a new `status` key goes at the end. YAML comments are
+    lost. The write uses `write_atomic()`. Raises InputError for a status that
+    is not in STATUSES.
+    """
+    if status not in STATUSES:
+        raise InputError(f"{status!r} is not a run status. Use one of {STATUSES}.")
+    new = dict(meta)
+    new["status"] = status
+    text = yaml.safe_dump(new, sort_keys=False)
+    write_atomic(run_dir / RUN_YAML, text.encode("utf-8"))

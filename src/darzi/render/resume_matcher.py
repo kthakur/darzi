@@ -36,12 +36,17 @@ Guards (docs/SPEC.md section 9):
 - A lock file stops two renders at the same time. It is in the system
   temporary folder and not in the data folder (see `lock_path`).
 - `uv run --no-sync` does not change the Resume Matcher install.
+
+Commit: `clone_commit()` reads the commit of the Resume Matcher clone from the
+files in its `.git` folder, with no subprocess. `finalize` writes it into
+`manifest.json`. It is None when the files do not give a commit.
 """
 
 import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
@@ -68,6 +73,11 @@ REQUIRED = ("path", "data_dir", "frontend_url", "backend_url")
 SECTION = "[render.resume_matcher]"
 # A NUL character, a tab and each line end of str.splitlines().
 BAD_CHARACTERS = "\0\t\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+# A commit id: SHA-1 (40) or SHA-256 (64) hex characters.
+COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# The largest .git file that clone_commit() reads: 4 MiB (packed-refs).
+MAX_GIT_FILE = 4 * 1024 * 1024
 
 # A runner takes the argument list and the stdin text. It returns the exit
 # code, stdout and stderr. Tests give a fake runner.
@@ -264,6 +274,10 @@ class ResumeMatcher:
             raise RenderError(f"resume-matcher {tool} gave no JSON object.")
         return result
 
+    def commit(self) -> str | None:
+        """Return the commit of the Resume Matcher clone, or None (see clone_commit)."""
+        return clone_commit(self.config.path)
+
     def scratch_id(self) -> str | None:
         """Return the id of the scratch record, or None when there is none.
 
@@ -399,6 +413,72 @@ def _result(exported: dict[str, Any], out: Path) -> RenderResult:
         template=template if isinstance(template, str) else "",
         page_size=page_size if isinstance(page_size, str) else "",
     )
+
+
+def _git_text(path: Path) -> str | None:
+    """Return the text of one small file of a `.git` folder, or None."""
+    if not is_file(path):
+        return None
+    with path.open("rb") as f:
+        data = f.read(MAX_GIT_FILE + 1)
+    if len(data) > MAX_GIT_FILE:
+        return None
+    return data.decode("utf-8")
+
+
+def _git_folder(clone: Path) -> tuple[Path, Path] | None:
+    """Return the git folder of `clone` and its common folder, or None.
+
+    `.git` is a folder, or a file with a `gitdir:` line (a worktree). A
+    worktree keeps its branches in the folder that its `commondir` file names.
+    """
+    git = clone / ".git"
+    if not is_dir(git):
+        text = _git_text(git)
+        if text is None or not text.startswith("gitdir:"):
+            return None
+        git = clone / text[len("gitdir:") :].strip()
+        if not is_dir(git):
+            return None
+    common = git
+    text = _git_text(git / "commondir")
+    if text is not None:
+        common = git / text.strip()
+    return git, common
+
+
+def clone_commit(clone: Path) -> str | None:
+    """Return the commit that HEAD of the git clone `clone` names, or None.
+
+    The function reads `.git/HEAD`, then the branch file or `packed-refs`. It
+    starts no program. Each problem (no `.git`, a file that cannot be read, a
+    value that is not a commit id) gives None.
+    """
+    try:
+        folders = _git_folder(clone)
+        if folders is None:
+            return None
+        git, common = folders
+        head = (_git_text(git / "HEAD") or "").strip()
+        if COMMIT_ID.fullmatch(head):
+            return head
+        if not head.startswith("ref:"):
+            return None
+        ref = head[len("ref:") :].strip()
+        if not ref.startswith("refs/") or ".." in ref.split("/"):
+            return None
+        for folder in (git, common):
+            value = _git_text(folder / ref)
+            if value is not None:
+                value = value.strip()
+                return value if COMMIT_ID.fullmatch(value) else None
+        for line in (_git_text(common / "packed-refs") or "").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == ref and COMMIT_ID.fullmatch(parts[0]):
+                return parts[0]
+        return None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
 
 
 def from_settings(repo: Path, render: RenderSettings | None) -> ResumeMatcher:

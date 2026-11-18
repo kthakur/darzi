@@ -290,6 +290,7 @@ hand-over manifest.
 | `out/` | PDF, Word résumé, Word cover letter | `finalize` |
 
 - Status values: `new`, `finalized`, `submitted`.
+- `finalize` writes the status `finalized` in `run.yaml` after it writes `manifest.json`.
 - The résumé JSON format does not change. It is the Resume Matcher `ResumeData`
   shape that `export.py` writes today. Keep the loader in `check.py`
   (`load_run()`) as it is.
