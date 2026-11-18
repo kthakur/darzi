@@ -87,18 +87,40 @@ def test_each_facts_command_in_the_text_is_built() -> None:
     assert used <= built_commands(), used - built_commands()
     for command in ("doctor", "new-run", "check", "approve", "finalize"):
         assert command in used
-    assert {"fill-plan", "submitted", "export", "render"} <= used
+    assert {"fill-plan", "submitted", "export", "render", "fit"} <= used
 
 
-def test_the_text_has_no_fit_step_and_no_hand_over_path() -> None:
-    assert "facts fit" not in APPLY
+def test_the_text_has_the_fit_step_and_no_hand_over_path() -> None:
     assert "--handover" not in APPLY
-    assert "requirements.json" not in APPLY
+    step2 = APPLY.split("\n2. **", 1)[1].split("\n3. **", 1)[0]
+    flat = " ".join(step2.split())
+    assert flat.startswith("Rate the fit.**")
+    for text in (
+        "Write `RUN/requirements.json`",
+        "copy its words from `job.md` exactly as `quote`",
+        "Run `facts fit RUN`",
+        "correct `RUN/requirements.json` and run it again",
+        "the rating, the counts, the hard requirements that are not met or "
+        "unknown, and the gaps",
+        "If a hard requirement is `not_met`, STOP and ask the owner",
+        "the rating never blocks a run",
+    ):
+        assert text in flat, text
 
 
-def test_the_steps_are_1_to_11() -> None:
+def test_the_fit_step_comes_after_the_job_post_and_before_the_job_type() -> None:
+    titles = re.findall(r"^\d+\. \*\*([^*]+)\*\*", APPLY, flags=re.MULTILINE)
+    assert titles[:3] == ["Save the job post.", "Rate the fit.", "Choose the job type."]
+
+
+def test_the_steps_are_1_to_12() -> None:
     steps = [int(n) for n in re.findall(r"^(\d+)\. \*\*", APPLY, flags=re.MULTILINE)]
-    assert steps == list(range(1, 12))
+    assert steps == list(range(1, 13))
+
+
+def test_the_draft_step_names_the_margin_range() -> None:
+    flat = " ".join(APPLY.split())
+    assert "(in mm, from 5 to 25, default 10)" in flat
 
 
 def test_the_text_holds_the_rules() -> None:

@@ -12,7 +12,8 @@ MASTER = "master.schema.json"
 RULES = "rules.schema.json"
 SELECTION = "selection.schema.json"
 ANSWERS = "answers.schema.json"
-NAMES = (MASTER, RULES, SELECTION, ANSWERS)
+REQUIREMENTS = "requirements.schema.json"
+NAMES = (MASTER, RULES, SELECTION, ANSWERS, REQUIREMENTS)
 
 
 def load_schema(name: str) -> dict[str, Any]:

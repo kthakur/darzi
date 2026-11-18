@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "requirements.schema.json",
+  "title": "The requirements of one job post",
+  "description": "The agent writes this file in the run folder. Each quote is copied from job.md. A hard requirement has a status and a basis; a wanted requirement has a list of evidence from the public copy of the facts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "requirements"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/requirement"}
+    }
+  },
+  "$defs": {
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "quote"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        "kind": {"enum": ["hard", "wanted"]},
+        "quote": {
+          "description": "Words copied exactly from job.md, from one line or one list item.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S"
+        },
+        "status": {"enum": ["met", "not_met", "unknown"]},
+        "basis": {
+          "description": "answers:<answer id>, or the id of a role, project, bullet or education entry in the public copy.",
+          "type": "string",
+          "pattern": "^(answers:[a-z0-9]+(_[a-z0-9]+)*|[a-z0-9]+(-[a-z0-9]+)*)$"
+        },
+        "evidence": {
+          "description": "Bullet ids and skill:<exact skill name> from the public copy. An empty list means no evidence.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(skill:.+|[a-z0-9]+(-[a-z0-9]+)*)$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "hard"}}, "required": ["kind"]},
+          "then": {"required": ["status"], "properties": {"evidence": false}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "wanted"}}, "required": ["kind"]},
+          "then": {
+            "required": ["evidence"],
+            "properties": {"status": false, "basis": false}
+          }
+        }
+      ]
+    }
+  }
+}
