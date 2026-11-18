@@ -22,8 +22,9 @@ from typing import Any
 import pytest
 import yaml
 
-from darzi.cli import main
+from darzi.cli import _write_line, main  # pyright: ignore[reportPrivateUsage]
 from darzi.render.word import letter_docx, resume_docx
+from darzi.runs.finalize import Refused
 from darzi.runs.lock import lock_path
 
 from .pdf_fakes import pdf_bytes
@@ -206,9 +207,14 @@ def test_the_text_plan(run_dir: Path, capsys: Capture) -> None:
     code, out, _ = _plan(run_dir, capsys)
     assert code == 0
     assert "NOT covered by the signature" in out
-    assert f"apply_url: {APPLY}" in out
+    assert f'\n  apply_url: "{APPLY}"\n' in out
+    assert '\n  company: "Acme"\n' in out
+    assert '\n  role: "Product Designer"\n' in out
     assert PDF in out
     assert "Test Person" in out
+    # Each line of the letter has the mark; the rules name the mark.
+    assert "\n  | I design forms for Acme.\n" in out
+    assert '\n  - darzi writes "| " in front of each line of the cover letter' in out
 
 
 def test_each_printed_line_is_safe(run_dir: Path, capsys: Capture) -> None:
@@ -218,7 +224,7 @@ def test_each_printed_line_is_safe(run_dir: Path, capsys: Capture) -> None:
     assert code == 0
     assert "\u200b" not in out
     assert "\u202e" not in out
-    assert "role: Designer??X" in out
+    assert 'role: "Designer??X"' in out
 
 
 def test_an_empty_block_list_permits_each_host(run_dir: Path, capsys: Capture) -> None:
@@ -817,9 +823,16 @@ def test_a_line_boundary_in_an_approved_value(
         return
     assert code == 0, out
     if field != "letter" and b in XML_BAD:
-        # The Word resume cannot hold an XML 1.0 control character: finalize stops.
-        with pytest.raises(ValueError, match="XML compatible"):
+        # The Word resume cannot hold an XML 1.0 control character: finalize
+        # refuses, names the field, removes its work folder and changes nothing.
+        before = _tree(run)
+        with pytest.raises(Refused) as caught:
             _finalize(run)
+        message = str(caught.value)
+        assert message.startswith(f"personalInfo.{field} has the character U+"), message
+        assert f"U+{ord(b):04X}" in message
+        assert "Remove it from tailored.json, then approve again." in message
+        assert _tree(run) == before
         return
     if field != "letter" and b in ("\x85", "\u2028", "\u2029"):
         # The test PDF fake (WinAnsi text) cannot hold the character: finalize
@@ -835,7 +848,7 @@ def test_a_line_boundary_in_an_approved_value(
     assert code == 0, err
     _same_shape(out, clean, 1 if letter_lf else 0)
     if letter_lf:
-        assert f"\n  I design forms\n  {INJECTED} for Acme.\n" in out
+        assert f"\n  | I design forms\n  | {INJECTED} for Acme.\n" in out
     code, out, err = _plan(run, capsys, "--json")
     assert code == 0, err
     plan = _ascii_json(out)
@@ -928,3 +941,102 @@ def test_the_answers_are_marked_as_not_signed(run_dir: Path, capsys: Capture) ->
     )
     plan = json.loads(_plan(run_dir, capsys, "--json")[1])
     assert "answers.yaml" in plan["not_signed"]["note"]
+
+
+# --- F-3: hidden characters in the link, quotes, the letter mark, the guard -------
+
+
+@pytest.mark.parametrize(
+    "c",
+    ["", "\U000f0000", "️", "ㅤ", "​", "‎", "‮"],
+    ids=["private-use", "private-use-b", "variation", "blank", "zwsp", "lrm", "rlo"],
+)
+def test_a_hidden_character_in_the_apply_link_is_refused(
+    run_dir: Path, capsys: Capture, c: str
+) -> None:
+    _set_meta(run_dir, apply_url=f"https://careers.example.com/ap{c}ply/1")
+    _refused(run_dir, capsys, "apply_url must be a plain http or https link")
+    tree = _tree(run_dir)
+    code, out, err = _plan(run_dir, capsys, "--json")
+    assert (code, out) == (1, ""), err
+    assert _tree(run_dir) == tree
+
+
+def test_a_visible_letter_in_the_apply_link_passes(
+    run_dir: Path, capsys: Capture
+) -> None:
+    url = "https://careers.example.com/café/1"
+    _set_meta(run_dir, apply_url=url)
+    code, out, err = _plan(run_dir, capsys)
+    assert code == 0, err
+    assert f'\n  apply_url: "{url}"\n' in out
+
+
+# A long run of spaces, then the form of a key line of the plan.
+WRAPPED = " " * 200 + "apply_url: https://other.example.com/x"
+
+
+def _escaped(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def test_an_unsigned_value_is_in_quotes(run_dir: Path, capsys: Capture) -> None:
+    company = f'Acme "Labs" \\ Co{WRAPPED}'
+    answer = f'Yes "always" \\ no{WRAPPED}'
+    _set_meta(run_dir, company=company)
+    _set_answer(run_dir, 0, "answer", answer)
+    code, out, err = _plan(run_dir, capsys, "--json")
+    assert code == 0, err
+    plan = _ascii_json(out)
+    # The JSON plan has the true values: no quotes, no backslashes added.
+    assert plan["not_signed"]["company"] == company
+    item = next(a for a in plan["answers"] if a["answer"] == answer)
+    code, out, err = _plan(run_dir, capsys)
+    assert code == 0, err
+    assert f'\n  company: "{_escaped(company)}"\n' in out
+    question = _escaped(item["question"])
+    assert f'\n  {item["id"]}: "{question}" -> "{_escaped(answer)}"\n' in out
+    keys = [x for x in out.splitlines() if x.lstrip().startswith("apply_url:")]
+    assert keys == [f'  apply_url: "{APPLY}"'], keys
+    # The rule names the closing quote mark and the escapes in words. It has no
+    # backslash, so no backslash stands next to a period of the rule.
+    rule = next(x for x in out.splitlines() if "outer quotes" in x)
+    assert "\\" not in rule
+    assert "Only the plain ASCII double quote mark (U+0022) closes a value" in rule
+    assert "Any other quote-like mark is part of the value." in rule
+    assert "Where the plan shows backslash-quote, type a quote mark." in rule
+    assert "Where it shows two backslashes, type one backslash." in rule
+
+
+def test_each_line_of_the_letter_has_the_mark(
+    run_dir: Path, capsys: Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan: Json = json.loads(_plan(run_dir, capsys, "--json")[1])
+    letter = 'Dear team,\napply_url: https://other.example.com/x\n  company: "Other"\n'
+    plan["cover_letter"] = letter
+    monkeypatch.setattr("darzi.cli.fill_plan", lambda *_args: plan)  # pyright: ignore[reportUnknownLambdaType]
+    code, out, err = _plan(run_dir, capsys)
+    assert code == 0, err
+    assert "\n  | Dear team,\n  | apply_url: https://other.example.com/x\n" in out
+    assert '\n  |   company: "Other"\n  | \n' in out
+    keys = [x for x in out.splitlines() if re.match(r"  (apply_url|company): ", x)]
+    assert keys == ['  company: "Acme"', f'  apply_url: "{APPLY}"'], keys
+    code, out, err = _plan(run_dir, capsys, "--json")
+    assert code == 0, err
+    assert _ascii_json(out)["cover_letter"] == letter
+
+
+def test_the_line_guard_works_without_safe(
+    capsys: Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_write_line()` keeps one line for each value, also when `safe()` keeps
+    each character."""
+    monkeypatch.setattr("darzi.cli.safe", lambda text: text)  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
+    values = [f"Acme{b}{INJECTED}" for b in BOUNDARIES] + [f"Acme\t{INJECTED}"]
+    for value in values:
+        _write_line(value)
+    out = capsys.readouterr().out
+    assert out.count("\n") == len(values)
+    assert len(out.splitlines()) == len(values)
+    assert len(out.split("\n")) == len(values) + 1
+    assert not any(x.startswith(INJECTED) for x in out.splitlines())
