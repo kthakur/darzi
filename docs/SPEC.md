@@ -186,7 +186,11 @@ input. A `rules.yaml` or a `base.map.json` that lacks a key that a rule of the
 command can read is invalid input: the command tests the keys before it runs the
 rules, prints a short message that names the key, and gives exit code 2. No
 command sends data outside the machine, except `new-run --url` (one
-fetch) and `doctor` (a release-tag lookup). `new-run --url` makes one GET
+fetch) and `doctor` (a release-tag lookup).
+`doctor` also makes one local check: one GET to the health address of the
+Resume Matcher backend and one to its frontend, only after the loopback guard
+passes and the host name resolves to loopback addresses only.
+`new-run --url` makes one GET
 request and follows at most 5 redirects; at each hop, it refuses a URL that is
 not http or https and each address that is not a public internet address.
 
