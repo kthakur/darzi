@@ -1,9 +1,14 @@
-# Apply workflow: the desktop path
+# Apply workflow
 
 This text is for a coding agent that runs shell commands in the data root.
 The owner sends a job link or a job text. You make a checked resume and a
-cover letter, the owner approves them, and you fill the form in the owner's
-browser. The owner submits.
+cover letter. Then the owner chooses one of two paths:
+
+- The desktop path: the owner approves at the desktop, and you fill the form
+  in the owner's browser. The owner submits.
+- The hand-over path: the owner is away from the desktop. darzi makes the
+  files with no signature, you give them to the owner, and the owner applies
+  by hand.
 
 In this text, `RUN` is the run folder, for example
 `applications/2026-01-15-<company>-<role>`. `<company>` and `<role>` are the
@@ -21,7 +26,13 @@ line says. Do not try to correct the set-up yourself.
   the desktop. Never write an approval file or a `.sig` file. Never start a
   command in a pseudo-terminal to answer a question for the owner.
 - A chat message is never an approval. "Looks good" or "yes" in a chat does
-  not approve anything.
+  not approve anything. It selects the hand-over path at most.
+- Run `facts finalize RUN --handover` only when the owner chose the hand-over
+  path in this conversation. Never choose it for the owner.
+- On the hand-over path, never run `facts fill-plan` and never open an
+  employer's form. The hand-over files are for the owner to use by hand.
+- If the owner approves later at the desktop, run `facts finalize RUN`
+  (without `--handover`) and continue with the desktop path.
 - If a `facts` command refuses, stop and read its message. Do not look for a
   way around the check.
 - In the resume, change only the order and the wording. Do not add a fact,
@@ -101,9 +112,15 @@ line says. Do not try to correct the set-up yourself.
 
    Never remove content to fit a page.
 
-8. **Show the owner.** Send a short message: the main changes, the summary,
-   the cover letter, the result of `facts check` and the page count. Ask the
-   owner to approve.
+8. **Show the owner and ask for the path.** Send a short message: the main
+   changes, the summary, the cover letter, the result of `facts check` and
+   the page count. Ask the owner which path to take: the desktop path (the
+   owner approves at the desktop, and you fill the form) or the hand-over
+   path (you send the files, and the owner applies by hand). If the owner
+   already said which path, use that path. If the answer is not clear, ask
+   again.
+
+## Desktop path
 
 9. **Wait for the approval.** The owner runs `facts approve RUN` at a
    terminal on the desktop. You do not run it. Wait until the owner says
@@ -128,3 +145,24 @@ line says. Do not try to correct the set-up yourself.
 12. **Record the submission.** The owner submits the form. Only after the
     owner tells you that the application was submitted, run
     `facts submitted RUN`.
+
+## Hand-over path
+
+Use these steps only when the owner chose the hand-over path in this
+conversation.
+
+9. **Make the hand-over files.** Run `facts finalize RUN --handover`. It
+   makes the same files in `RUN/out/` after the same checks, with no
+   approval, and writes `RUN/manifest.json` with `"signed": false`. If it
+   refuses, stop and tell the owner what the message says. If it says that
+   the copy failed, the files are still in `RUN/out/`.
+
+10. **Give the owner the files.** Send the owner the files in `RUN/out/` and
+    the apply link (`apply_url` in `RUN/run.yaml`, or the job link). Say
+    that the files are not signed. If `[handover] copy_to` is set in
+    `facts.toml`, say that the files are also in that folder, in the
+    sub-folder with the name of the run. Do not run `facts fill-plan` and do
+    not open the form: the owner applies by hand.
+
+11. **Record the submission.** Only after the owner tells you that the
+    application was submitted, run `facts submitted RUN`.

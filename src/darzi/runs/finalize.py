@@ -1,19 +1,26 @@
-"""`facts finalize RUN`: the files for an employer, from signed content only.
+"""`facts finalize RUN` and `facts finalize RUN --handover`.
 
-The command is in two parts (docs/SPEC.md sections 7, 8 and 9):
+The command is in parts (docs/SPEC.md sections 7, 8 and 9):
 
-1. `finalize()` is the gate. It reads the run inputs one time into memory and
-   decides "approved" with `run_is_approved()` on that content. Then it runs
-   `unreviewable()` and `facts check` on the same content.
-2. `_build_and_commit()` is private. It takes the content that the gate
-   passed and the fingerprint of the key that signed it. It builds the files
-   in a work folder, counts their pages, runs the round-trip check on each
-   file, and only then moves the files to `out/` and writes `manifest.json`
-   and the status `finalized`.
+1. `finalize()` is the signed gate. It reads the run inputs one time into
+   memory and decides "approved" with `run_is_approved()` on that content.
+   Then it runs `unreviewable()` and `facts check` on the same content.
+2. `finalize_handover()` is the hand-over gate (W-13). It reads no approval.
+   It refuses a run with a signed manifest, runs `unreviewable()`, a scan of
+   the fields that `facts check` does not read (`handover_scan()`), and
+   `facts check`. After the commit, it copies the output files to
+   `[handover] copy_to` when that is set.
+3. `_build_and_commit()` is private. It takes the content that a gate passed
+   and the approval fields of the manifest from that gate, with no default.
+   It builds the files in a work folder, counts their pages, runs the
+   round-trip check on each file, and only then moves the files to `out/` and
+   writes `manifest.json` and the status `finalized`.
 
-The gate has no parameter, flag, environment variable or test mode that skips
-the approval. W-8 writes `"signed": true` only. The hand-over path of W-13
-(`--handover`, `"signed": false`) adds its own gate; W-8 has no such path.
+Each gate writes its own `signed` value as a literal: the signed gate `True`
+with `approval_hash` and `signer_fingerprint`, the hand-over gate `False` with
+neither key. Neither gate has a parameter, flag, environment variable or test
+mode that changes this. Only the command-line flag `--handover` calls
+`finalize_handover()`.
 
 The order of the writes:
 
@@ -39,6 +46,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 from collections.abc import Callable
@@ -47,12 +55,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from darzi.config import RenderSettings, load_config
-from darzi.facts.check import MANIFEST, RunFiles, check, load_run
+from darzi.config import HandoverSettings, RenderSettings, load_config
+from darzi.facts.check import MANIFEST, RunFiles, check, load_run, require_public_keys
 from darzi.facts.check_meta import load_open_questions
+from darzi.facts.public import privacy_findings
 from darzi.facts.repo import InputError, load_master, load_rules
 from darzi.facts.validate import Finding
-from darzi.paths import exists, is_dir, is_file
+from darzi.paths import exists, is_dir, is_file, write_atomic
 from darzi.render.resume_matcher import ADAPTER, ResumeMatcher
 from darzi.render.word import (
     DEFAULT_LEVELS,
@@ -70,7 +79,6 @@ from darzi.runs.runs import (
     content_hash,
     load_meta,
     settings_of,
-    write_atomic,
     write_status,
 )
 from darzi.runs.signing import in_data_root, run_target
@@ -123,12 +131,20 @@ class RoundTripFailed(Refused):
         self.findings = findings
 
 
+class CopyFailed(Refused):
+    """The run is finalized, but the copy to `[handover] copy_to` failed."""
+
+
 @dataclass(frozen=True)
 class Finalized:
-    """The result of a finalize: the manifest that was written, and warnings."""
+    """The result of a finalize: the manifest that was written, and warnings.
+
+    `copied_to` is the folder with the copy of the hand-over files, or None.
+    """
 
     manifest: dict[str, Any]
     warnings: list[str]
+    copied_to: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -139,7 +155,6 @@ class _Passed:
     run: RunFiles
     meta: dict[str, Any]
     digest: str
-    fingerprint: str
     settings: dict[str, Any]
 
 
@@ -261,11 +276,295 @@ def finalize(
             run=run,
             meta=meta,
             digest=content_hash(run.tailored, run.letter),
-            fingerprint=verdict.fingerprint,
             settings=settings_of(meta, run_dir),
         )
         renderer = renderer_for(repo, config.render)
-        return _build_and_commit(passed, renderer, count_pages, office_ready, today)
+        signing = {
+            "signed": True,
+            "approval_hash": passed.digest,
+            "signer_fingerprint": verdict.fingerprint,
+        }
+        return _build_and_commit(
+            passed, renderer, count_pages, office_ready, today, signing
+        )
+
+
+# --- The hand-over path (W-13) ------------------------------------------------
+
+# The fields that `facts check` does not read, with their sections.
+SCAN_FIELDS = (
+    ("workExperience", ("website", "github")),
+    ("personalProjects", ("website", "github", "location")),
+    ("education", ("location",)),
+)
+# The name of each output file, after the stem.
+COPY_SUFFIXES = ("_Resume.pdf", "_Resume.docx", "_Cover_Letter.docx")
+
+
+def finalize_handover(
+    repo: Path,
+    run_dir: Path,
+    *,
+    renderer_for: RendererFor,
+    count_pages: CountPages,
+    office_ready: OfficeReady,
+    today: dt.date,
+) -> Finalized:
+    """Build the files of a run with no approval, for the owner to use by hand.
+
+    This is the hand-over gate. It reads no approval and writes `"signed":
+    false` with no `approval_hash` and no `signer_fingerprint`. `fill-plan`
+    refuses such a run. The steps are those of `finalize()`, with these
+    differences: the `[handover] copy_to` folder is tested before anything
+    changes; a run whose manifest is not a hand-over manifest is refused (a
+    hand-over never replaces a signed result); `handover_scan()` runs after
+    `unreviewable()`; and after the commit the output files are copied to
+    `<copy_to>/<run folder name>/` when copy_to is set.
+
+    Raises InputError (exit code 2) for invalid input, a run folder that is
+    not in the data root, a link, or a copy_to folder that fails a test;
+    Refused (exit code 1) for each refusal; CopyFailed (a Refused) when the
+    copy fails after the commit; RoundTripFailed and RenderError as finalize.
+    """
+    # Steps 1 to 3: facts.toml, the binding to the data root, the links.
+    config = load_config(repo)
+    _refuse_other_root(repo, run_dir)
+    _refuse_links(run_dir)
+    # Step 4: the copy folder, before anything changes.
+    copy_dir = copy_folder(repo, config.handover)
+    if copy_dir is not None:
+        _refuse_copy_target(copy_dir / run_dir.name, [])
+    # Step 5: the status.
+    _refuse_status(run_dir, load_meta(run_dir))
+    with locked(run_dir, Refused):
+        # Step 6: run.yaml again inside the lock.
+        meta = load_meta(run_dir)
+        _refuse_status(run_dir, meta)
+        # Step 7: a hand-over never replaces a signed result.
+        _refuse_signed_manifest(run_dir)
+        # Step 8: read the inputs ONE time. Each later step uses `run`.
+        run = load_run(run_dir)
+        if copy_dir is not None:
+            stem = _file_stem(run.tailored)
+            names = [f"{stem}{end}" for end in COPY_SUFFIXES]
+            _refuse_copy_target(copy_dir / run_dir.name, names)
+        # Step 9: no approval is read on this path.
+        # Step 10: refuse a part that the checks cannot read.
+        hidden = unreviewable(run.tailored)
+        if hidden:
+            raise Refused(
+                "tailored.json has parts that the checks cannot read: "
+                + ", ".join(hidden)
+                + ". Remove them, then finalize --handover again."
+            )
+        # Step 11: the contact and privacy rules on the fields that facts
+        # check does not read.
+        rules = load_rules(repo)
+        found = handover_scan(run.tailored, rules)
+        if found:
+            places = "; ".join(f"{f.rule} at {f.location}" for f in found)
+            raise Refused(
+                f"the hand-over scan found private data: {places}. Remove it "
+                "from tailored.json, then finalize --handover again."
+            )
+        # Step 12: facts check on the same content.
+        findings = check(run, rules, load_master(repo), load_open_questions(repo))
+        errors = [f for f in findings if f.severity == "error"]
+        if errors:
+            raise Refused(
+                f"facts check has {len(errors)} errors. Run facts check {run_dir}, "
+                "correct them, then finalize --handover again."
+            )
+        # Steps 13 and 14: build, check and commit, with signed false.
+        passed = _Passed(
+            run_dir=run_dir,
+            run=run,
+            meta=meta,
+            digest=content_hash(run.tailored, run.letter),
+            settings=settings_of(meta, run_dir),
+        )
+        renderer = renderer_for(repo, config.render)
+        done = _build_and_commit(
+            passed, renderer, count_pages, office_ready, today, {"signed": False}
+        )
+        if copy_dir is None:
+            return done
+        # Step 15: the copy, after the commit.
+        target = copy_dir / run_dir.name
+        try:
+            _copy_files(run_dir, done.manifest["files"], target)
+        except (OSError, InputError) as exc:
+            raise CopyFailed(
+                f"the run is finalized and its files are in {run_dir / OUT}/, but "
+                f"the copy to {target} failed: {exc}. Give the owner the files in "
+                f"{run_dir / OUT}/, or correct the folder and run facts finalize "
+                f"{run_dir} --handover again."
+            ) from exc
+        return Finalized(done.manifest, done.warnings, target)
+
+
+def _refuse_status(run_dir: Path, meta: dict[str, Any]) -> None:
+    """Raise Refused unless the status of `meta` is new or finalized."""
+    status: Any = meta.get("status")
+    if status not in FINALIZABLE:
+        raise Refused(
+            f"{run_dir / RUN_YAML} has the status {status!r}. finalize works "
+            "only on a run with the status new or finalized."
+        )
+
+
+def _refuse_signed_manifest(run_dir: Path) -> None:
+    """Raise Refused unless the run has no manifest or a hand-over manifest.
+
+    A manifest that says `"signed": true`, or that cannot be read as a JSON
+    object with `"signed": false`, is refused. So a hand-over never replaces
+    a signed result.
+    """
+    path = run_dir / MANIFEST
+    if not exists(path):
+        return
+    try:
+        data: Any = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise Refused(
+            f"{path} cannot be read: {exc}. finalize --handover does not replace "
+            "a manifest that it cannot read. Ask the owner what to do."
+        ) from exc
+    signed: Any = data.get("signed") if isinstance(data, dict) else None
+    if signed is True:
+        raise Refused(
+            f"{path} is a signed manifest. A hand-over never replaces a signed "
+            f"result. The signed files are in {run_dir / OUT}/."
+        )
+    if signed is not False:
+        raise Refused(
+            f"{path} is not a hand-over manifest (no signed: false). "
+            "finalize --handover does not replace it. Ask the owner what to do."
+        )
+
+
+def handover_scan(tailored: dict[str, Any], rules: dict[str, Any]) -> list[Finding]:
+    """Return the R-1 and PV-3 findings in fields that `facts check` does not read.
+
+    The fields: `website` and `github` of each job and project, `location` of
+    each project and education entry, and `displayName` of each section. The
+    rule code is `privacy_findings()` of the public copy (the R-1 contact
+    rules and PV-3), with no change. The PV-3 exemption `allowed_bullet_ids`
+    is for bullets, so it does not apply to these fields. Raises InputError
+    when rules.yaml lacks a key that the scan reads.
+    """
+    require_public_keys(rules)
+    fields: dict[str, str] = {}
+    for section, keys in SCAN_FIELDS:
+        entries: Any = tailored.get(section) or []
+        for i, entry in enumerate(entries):
+            for key in keys:
+                value: Any = entry.get(key) if isinstance(entry, dict) else None
+                if value is not None and value != "":
+                    fields[f"{section}[{i}].{key}"] = str(value)
+    metas: Any = tailored.get("sectionMeta") or []
+    for i, meta in enumerate(metas):
+        name: Any = meta.get("displayName") if isinstance(meta, dict) else None
+        if name is not None and name != "":
+            fields[f"sectionMeta[{i}].displayName"] = str(name)
+    privacy: dict[str, Any] = {**rules["privacy_patterns"], "allowed_bullet_ids": []}
+    return privacy_findings(fields, {**rules, "privacy_patterns": privacy})
+
+
+def copy_folder(repo: Path, settings: HandoverSettings) -> Path | None:
+    """Return the tested `[handover] copy_to` folder, or None when not set.
+
+    A relative path is relative to the data root. A leading `~/` means the
+    home folder of the user in the system user database; the HOME
+    environment variable is not read. The folder must exist (darzi does not
+    make it), be a folder, be writable, and its real path must be outside the
+    real path of the data root, and the data root must not be inside it. The
+    folder itself may be a symbolic link.
+    Raises InputError (exit code 2) for each failed test.
+    """
+    value = settings.copy_to
+    if value is None:
+        return None
+    fix = "Correct [handover] copy_to in facts.toml, then finalize --handover again."
+    if value == "~" or value.startswith("~/"):
+        path = Path(pwd.getpwuid(os.getuid()).pw_dir) / value[2:]
+    elif value.startswith("~"):
+        raise InputError(
+            f"[handover] copy_to {value!r}: only ~/ for your own home folder "
+            f"is permitted. {fix}"
+        )
+    else:
+        path = repo / value
+    try:
+        if not is_dir(path):
+            raise InputError(
+                f"the copy_to folder {path} does not exist or is not a folder. "
+                f"darzi does not make it. Make the folder or correct copy_to."
+            )
+        if not os.access(path, os.W_OK | os.X_OK):
+            raise InputError(f"the copy_to folder {path} is not writable. {fix}")
+        real, root = path.resolve(strict=True), repo.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise InputError(
+            f"cannot read the copy_to folder {path}: {exc}. {fix}"
+        ) from exc
+    if real == root or root in real.parents:
+        raise InputError(
+            f"the copy_to folder {path} is inside the data root {root}. The "
+            f"hand-over files must not go into the private data root. {fix}"
+        )
+    if real in root.parents:
+        raise InputError(
+            f"the data root {root} is inside the copy_to folder {path}. A sync "
+            f"of that folder would copy the private data root. {fix}"
+        )
+    return path
+
+
+def _refuse_copy_target(target: Path, names: list[str]) -> None:
+    """Raise InputError when the run sub-folder or one of its files is a link.
+
+    `target` is `<copy_to>/<run folder name>`. When it exists, it must be a
+    real folder, and each name of `names` in it must not be a link or a
+    folder.
+    """
+    if target.is_symlink():
+        raise InputError(
+            f"{target} is a symbolic link. darzi does not copy through a link. "
+            "Remove the link, then finalize --handover again."
+        )
+    if not exists(target):
+        return
+    if not is_dir(target):
+        raise InputError(
+            f"{target} is not a folder. Remove it, then finalize --handover again."
+        )
+    for name in names:
+        path = target / name
+        if path.is_symlink() or is_dir(path):
+            raise InputError(
+                f"{path} is a symbolic link or a folder. Remove it, then "
+                "finalize --handover again."
+            )
+
+
+def _copy_files(run_dir: Path, files: list[dict[str, Any]], target: Path) -> None:
+    """Copy the output files that `files` lists into the folder `target`.
+
+    Only the files of the manifest are copied: never the manifest, run.yaml,
+    the job post, the answers or a fact file. Each file is read one time, its
+    hash is tested against the manifest, and it is written with a temporary
+    file and one rename. A file of the same name is replaced; other files in
+    `target` are not touched. Raises OSError or InputError.
+    """
+    if not exists(target) and not target.is_symlink():
+        target.mkdir()
+    _refuse_copy_target(target, [Path(item["path"]).name for item in files])
+    for item in files:
+        data = (run_dir / item["path"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != item["sha256"]:
+            raise InputError(f"{item['path']} does not have the manifest hash")
+        write_atomic(target / Path(item["path"]).name, data)
 
 
 def _file_stem(resume: dict[str, Any]) -> str:
@@ -286,18 +585,42 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# The approval fields of a manifest: exactly one of these two key sets.
+SIGNED_FIELDS = frozenset(("signed", "approval_hash", "signer_fingerprint"))
+HANDOVER_FIELDS = frozenset(("signed",))
+
+
+def _check_signing(signing: dict[str, Any]) -> None:
+    """Raise ValueError unless `signing` is the field set of exactly one gate.
+
+    The signed gate gives `signed` True with the two signed keys as texts; the
+    hand-over gate gives only `signed` False. Each other value is a bug.
+    """
+    keys = frozenset(signing)
+    if keys == SIGNED_FIELDS and signing["signed"] is True:
+        if all(isinstance(signing[k], str) and signing[k] for k in keys - {"signed"}):
+            return
+    elif keys == HANDOVER_FIELDS and signing["signed"] is False:
+        return
+    raise ValueError(f"not the approval fields of a gate: {sorted(keys)}")
+
+
 def _build_and_commit(
     passed: _Passed,
     renderer: ResumeMatcher,
     count_pages: CountPages,
     office_ready: OfficeReady,
     today: dt.date,
+    signing: dict[str, Any],
 ) -> Finalized:
-    """Build, check and commit the files of content that the gate passed.
+    """Build, check and commit the files of content that a gate passed.
 
-    Private: only a gate calls it. W-13 adds its own gate for the hand-over
-    path; W-8 has none.
+    Private: only a gate calls it. `signing` holds the approval fields of the
+    manifest that the gate gives, with no default: `signed` True with
+    `approval_hash` and `signer_fingerprint` (finalize), or only `signed`
+    False (finalize_handover).
     """
+    _check_signing(signing)
     run_dir, run = passed.run_dir, passed.run
     # Step 8: LibreOffice counts the Word pages. Refuse before the slow render.
     if not office_ready():
@@ -325,9 +648,7 @@ def _build_and_commit(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "run": run_target(run_dir),
         "date": today.isoformat(),
-        "signed": True,
-        "approval_hash": passed.digest,
-        "signer_fingerprint": passed.fingerprint,
+        **signing,
         "renderer": {
             "name": ADAPTER,
             "template": template,

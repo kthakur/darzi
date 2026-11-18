@@ -1,4 +1,4 @@
-"""Live test of `facts finalize RUN` on a Resume Matcher TEST instance.
+"""Live tests of `facts finalize RUN` and `--handover` on a Resume Matcher TEST copy.
 
 The test needs the environment variable DARZI_RENDER_TEST (see
 tests/test_render_live.py) and LibreOffice. The run is synthetic, and it is
@@ -47,10 +47,8 @@ def _instance() -> dict[str, Any]:
     return data["render"]["resume_matcher"]
 
 
-def test_finalize_on_the_test_instance(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    rm = _instance()
+def _live_run(tmp_path: Path, rm: dict[str, Any]) -> Path:
+    """Return a synthetic run folder whose facts.toml names the test instance."""
     root = signed_copy(tmp_path / "signed")
     toml = root / "facts.toml"
     text = toml.read_text(encoding="utf-8").split("[render]")[0] + (
@@ -67,6 +65,27 @@ def test_finalize_on_the_test_instance(
     shutil.copy(run / "base.json", run / "tailored.json")
     (run / "cover_letter.md").write_text(LETTER, encoding="utf-8")
     (run / "run.yaml").write_text(RUN_YAML, encoding="utf-8")
+    return run
+
+
+def _check_files(run: Path, files: list[dict[str, Any]]) -> None:
+    assert [f["kind"] for f in files] == ["resume_pdf", "resume_word", "letter_word"]
+    approved = load_run(run)
+    for item in files:
+        path = run / item["path"]
+        assert path.is_file() and item["pages"] >= 1
+        if item["kind"] == "letter_word":
+            assert check_letter(LETTER, path) == []
+        else:
+            assert check_resume(approved.tailored, path) == []
+
+
+def test_finalize_on_the_test_instance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rm = _instance()
+    run = _live_run(tmp_path, rm)
+    root = run.parents[1]
     assert approve(root, run) == 0
     capsys.readouterr()
 
@@ -91,4 +110,42 @@ def test_finalize_on_the_test_instance(
         "live finalize:",
         [(f["kind"], f["pages"]) for f in files],
         manifest["renderer"],
+    )
+
+
+def test_finalize_handover_on_the_test_instance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rm = _instance()
+    run = _live_run(tmp_path, rm)
+    root = run.parents[1]
+    phone = tmp_path / "phone"
+    phone.mkdir()
+    toml = root / "facts.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8")
+        + f"\n[handover]\ncopy_to = {json.dumps(str(phone))}\n",
+        encoding="utf-8",
+    )
+    assert not (run / "approval.json").exists()
+    capsys.readouterr()
+
+    code = main(["finalize", str(run), "--repo", str(root), "--handover", "--json"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    data = json.loads(captured.out)
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    assert data["manifest"] == manifest
+    assert manifest["signed"] is False
+    assert "approval_hash" not in manifest and "signer_fingerprint" not in manifest
+    _check_files(run, manifest["files"])
+    assert data["copied_to"] == str(phone / RUN)
+    copied = sorted(p.name for p in (phone / RUN).iterdir())
+    assert copied == sorted(Path(f["path"]).name for f in manifest["files"])
+    assert "status: finalized" in (run / "run.yaml").read_text(encoding="utf-8")
+    print(
+        "live finalize --handover:",
+        [(f["kind"], f["pages"]) for f in manifest["files"]],
+        "copied:",
+        len(copied),
     )

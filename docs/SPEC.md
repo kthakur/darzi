@@ -178,6 +178,19 @@ yellow = 0.4                         # at or above this value is yellow; below i
 copy_to = ""                         # optional folder that syncs to the phone
 ```
 
+`[handover] copy_to`: only `facts finalize RUN --handover` uses it. An empty
+text means no copy. A relative path is relative to the data root; `~/` is the
+home folder of the user in the system user database, not `HOME`. The folder
+must exist (darzi does not make it), must be a writable folder, and its real
+path must be outside the data root (and the data root not inside it); else the
+command gives exit code 2 before it builds anything. After the commit, darzi
+copies only the output files that the manifest lists, each tested against its
+manifest hash, to `<copy_to>/<run folder name>/` (a temporary file, then a
+rename). The run sub-folder and its files must not be symbolic links. A file of
+the same name is replaced; other files stay. darzi never reads the copy. If the
+copy fails, the run stays finalized, the files are in `RUN/out/`, and the exit
+code is 1. The signed `facts finalize RUN` makes no copy.
+
 ## 6. Commands
 
 All commands accept `--repo PATH` and `--json`. JSON output has
@@ -267,6 +280,13 @@ The hand-over path has no signature, and that is on purpose:
   so the agent cannot put them into a form.
 - If the owner signs later, a normal `facts finalize RUN` replaces the files and
   the manifest.
+- A hand-over never replaces a signed result: `--handover` on a run whose
+  `manifest.json` says `"signed": true`, or cannot be read, is refused.
+- The hand-over path runs the refusals of the approval step (`unreviewable()`),
+  then the R-1 contact and PV-3 privacy rules, with no change, on the fields
+  that `facts check` does not read: `website` and `github` of a job or a
+  project, `location` of a project or an education entry, and the display name
+  of each section.
 
 Tests make a key with no passphrase in a temporary folder and a temporary data
 root. Production code has no environment variable or flag that replaces

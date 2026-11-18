@@ -19,6 +19,7 @@ from darzi.config import (
     Approval,
     Config,
     FormSettings,
+    HandoverSettings,
     RenderSettings,
     ResumeMatcherSettings,
     load_config,
@@ -411,3 +412,36 @@ def test_config_does_not_read_the_environment(
     source = Path(__file__).resolve().parents[1] / "src" / "darzi" / "config.py"
     lines = source.read_text(encoding="utf-8").splitlines()
     assert not any(line.startswith(("import os", "from os")) for line in lines)
+
+
+# --- [handover] (W-13) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "[handover]\n", '[handover]\ncopy_to = ""\n'],
+    ids=["no table", "no copy_to", "empty copy_to"],
+)
+def test_copy_to_not_set(tmp_path: Path, text: str) -> None:
+    assert load_config(_write(tmp_path, text)).handover == HandoverSettings()
+    assert HandoverSettings().copy_to is None
+
+
+def test_copy_to_set(tmp_path: Path) -> None:
+    repo = _write(tmp_path, '[handover]\ncopy_to = "../phone"\n')
+    assert load_config(repo).handover == HandoverSettings(copy_to="../phone")
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('handover = "x"\n', "handover must be a table"),
+        ("[handover]\ncopy_to = 1\n", "copy_to must be the path of a folder"),
+        ("[handover]\ncopy_to = true\n", "copy_to must be the path of a folder"),
+        ('[handover]\ncopy_to = ["a"]\n', "copy_to must be the path of a folder"),
+        ('[handover]\ncopy_to = "  "\n', "copy_to must be the path of a folder"),
+    ],
+)
+def test_an_invalid_handover_table(tmp_path: Path, text: str, message: str) -> None:
+    with pytest.raises(InputError, match=message):
+        load_config(_write(tmp_path, text))

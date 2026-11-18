@@ -1,4 +1,4 @@
-"""Tests of README.md: the privacy gates, the command table and the W-12 marker.
+"""Tests of README.md: the privacy gates, the command table and the hand-over path.
 
 The CI privacy gate scans src/, tests/, docs/ and scripts/, not README.md. So
 this test runs the functions of both gates on README.md, with no change to
@@ -70,12 +70,34 @@ def test_the_w12_marker_is_replaced_by_the_fit_limits() -> None:
 
 
 def test_the_readme_length() -> None:
-    assert 250 <= len(README.splitlines()) <= 310
+    assert 250 <= len(README.splitlines()) <= 360
 
 
-def test_the_readme_keeps_the_hand_over_path_for_later() -> None:
-    assert "--handover" not in README
-    assert "comes in a later version" in README
+def test_the_readme_has_the_hand_over_path() -> None:
+    assert "comes in a later version" not in README
+    assert "| `facts finalize --handover` |" in README
+    steps = README.split("## How an application goes", 1)[1].split("\n## ", 1)[0]
+    flat = " ".join(steps.split())
+    for text in (
+        "The hand-over path, when you are away from your desktop:",
+        '"Looks good" in a chat selects this path at most. It is never an approval.',
+        "The agent runs `facts finalize RUN --handover`",
+        "It does not run `facts fill-plan` and does not open the form.",
+        "the agent runs `facts finalize RUN` (without `--handover`)",
+    ):
+        assert text in flat, text
+    part = README.split("## The hand-over files", 1)[1].split("\n## ", 1)[0]
+    flat = " ".join(part.split())
+    for text in (
+        "**Not signed.**",
+        "**`facts fill-plan` refuses them.**",
+        "They are for you to use by hand.",
+        "`facts check` had no error, and the round-trip check passed on each file.",
+        "copies the three files to `<copy_to>/<run folder name>/`",
+        "It copies nothing else: no manifest,",
+        "The signed path makes no copy.",
+    ):
+        assert text in flat, text
 
 
 def test_the_key_commands_ask_for_a_passphrase() -> None:
