@@ -54,12 +54,23 @@ def test_each_facts_command_in_the_readme_is_built() -> None:
     assert used <= built_commands(), used - built_commands()
 
 
-def test_the_w12_marker_is_there_once() -> None:
-    assert README.count(W12_MARKER) == 1
+def test_the_w12_marker_is_replaced_by_the_fit_limits() -> None:
+    assert W12_MARKER not in README
+    assert "This part comes with the fit rating." not in README
+    section = README.split("### The fit rating", 1)[1].split("\n## ", 1)[0]
+    flat = " ".join(section.split())
+    for limit in (
+        "It does not show your chance of an interview.",
+        "the agent decides which fact matches which requirement. You can read "
+        "each pair in `fit.json`.",
+        "the rating never blocks a run. A red rating stops the agent only when "
+        "a hard requirement is not met. Then you decide.",
+    ):
+        assert limit in flat, limit
 
 
 def test_the_readme_length() -> None:
-    assert 250 <= len(README.splitlines()) <= 300
+    assert 250 <= len(README.splitlines()) <= 310
 
 
 def test_the_readme_keeps_the_hand_over_path_for_later() -> None:

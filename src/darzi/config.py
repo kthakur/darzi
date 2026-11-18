@@ -2,13 +2,15 @@
 
 This module reads only `<data root>/facts.toml`. It reads no environment
 variable. Each work item adds the section that it needs: `[owner]` (W-4),
-`[approval]` (W-5), `[render]` (W-6) and `[form]` (W-9).
+`[approval]` (W-5), `[render]` (W-6), `[form]` (W-9) and `[fit]` (W-12).
 """
 
+import math
 import re
 import tomllib
 import unicodedata
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,32 @@ class FormSettings:
     blocked_hosts: tuple[str, ...] = ()
 
 
+# The [fit] limits when facts.toml does not set them (docs/SPEC.md section 5).
+DEFAULT_GREEN = 0.7
+DEFAULT_YELLOW = 0.4
+FIT_KEYS = ("green", "yellow")
+
+
+@dataclass(frozen=True)
+class FitSettings:
+    """The `[fit]` limits of the rating: each a number from 0 to 1.
+
+    Coverage at or above `green` is green; at or above `yellow` is yellow.
+    """
+
+    green: float = DEFAULT_GREEN
+    yellow: float = DEFAULT_YELLOW
+
+
+def exact(value: float) -> Fraction:
+    """Return the exact value of the decimal text of `value` (0.7 gives 7/10).
+
+    `Fraction(0.2)` is a little above 2/10, because a float is a binary
+    fraction. The rating compares with the number that the owner wrote.
+    """
+    return Fraction(repr(value))
+
+
 @dataclass(frozen=True)
 class Config:
     """The settings of one data root.
@@ -92,6 +120,7 @@ class Config:
     approval: Approval = Approval()
     render: RenderSettings | None = None
     form: FormSettings | None = None
+    fit: FitSettings = FitSettings()
 
 
 # One label of an ASCII host name (RFC 1123): letters, digits and hyphens.
@@ -151,7 +180,9 @@ def load_config(repo: Path) -> Config:
     file is not valid TOML, when `[owner]`, `[approval]`, `[render]`,
     `[render.resume_matcher]` or `[form]` is not a table, when `name` or a
     value of these sections is not a non-empty string, or when `[form]` has no
-    `blocked_hosts` list of plain host names.
+    `blocked_hosts` list of plain host names. An absent `[fit]` table or key
+    gives the default limit; a `[fit]` value that is not a number from 0 to
+    1, or a `yellow` above `green`, raises InputError.
     """
     path = repo / FACTS_TOML
     try:
@@ -178,6 +209,7 @@ def load_config(repo: Path) -> Config:
         approval=_approval(path, data),
         render=_render(path, data),
         form=_form(path, data),
+        fit=_fit(path, data),
     )
 
 
@@ -281,3 +313,33 @@ def _blocked_host(entry: Any) -> str | None:
     if any(c in entry for c in ":/\\@*?#[]%") or any(c.isspace() for c in entry):
         return None
     return host_name(entry)
+
+
+def _fit(path: Path, data: dict[str, Any]) -> FitSettings:
+    section: Any = data.get("fit")
+    if section is None:
+        return FitSettings()
+    if not isinstance(section, dict):
+        raise InputError(f"{path}: fit must be a table. Write it as [fit].")
+    values: dict[str, float] = {"green": DEFAULT_GREEN, "yellow": DEFAULT_YELLOW}
+    for key in FIT_KEYS:
+        value: Any = section.get(key)
+        if value is None:
+            continue
+        number = (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and not (isinstance(value, float) and math.isnan(value))
+        )
+        if not number or not 0 <= value <= 1:
+            raise InputError(
+                f"{path}: [fit] {key} must be a number from 0 to 1, for example "
+                f"{values[key]}. Fix the {key}."
+            )
+        values[key] = float(value)
+    if exact(values["yellow"]) > exact(values["green"]):
+        raise InputError(
+            f"{path}: [fit] yellow ({values['yellow']}) is above green "
+            f"({values['green']}). Write a yellow that is not above green."
+        )
+    return FitSettings(green=values["green"], yellow=values["yellow"])

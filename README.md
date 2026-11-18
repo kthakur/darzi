@@ -148,8 +148,9 @@ never asks for a passphrase.
 ## How an application goes
 
 1. You send the agent a job link.
-2. The agent runs `facts new-run`, chooses the job type, runs `facts export`,
-   and writes the tailored résumé and the cover letter.
+2. The agent runs `facts new-run` and `facts fit`, and sends you the fit
+   rating. Then it chooses the job type, runs `facts export`, and writes the
+   tailored résumé and the cover letter.
 3. `facts check` and `facts render --draft` must pass. The agent sends you a
    short summary.
 4. You run `facts approve RUN` in a terminal on your desktop.
@@ -172,6 +173,7 @@ Each command accepts `--repo PATH` and `--json`. Exit codes: 0 = no errors,
 | `facts check` | Runs the rules on a run folder or a selection |
 | `facts export` | Writes `base.json` from an approved selection |
 | `facts new-run` | Makes a run folder and saves the job post first |
+| `facts fit` | Checks `requirements.json` and writes the fit rating to `fit.json` |
 | `facts render` | Renders a draft PDF outside the run folder and prints the page count |
 | `facts approve` | Shows the full text and signs your approval. You only. |
 | `facts finalize` | Makes the final PDF and Word files and `manifest.json` |
@@ -267,9 +269,15 @@ item must be there, in the approved order.
 
 ### The fit rating
 
-<!-- W-12: fit rating limits (SPEC section 14) -->
+`facts fit` rates how much of a job post your facts cover: green, yellow or
+red. It checks that each quote is in the post and that each fact exists.
 
-This part comes with the fit rating.
+- **Limit:** the rating shows how much of the post has a fact behind it. It
+  does not show your chance of an interview.
+- **Limit:** the agent decides which fact matches which requirement. You can
+  read each pair in `fit.json`.
+- **Limit:** the rating never blocks a run. A red rating stops the agent
+  only when a hard requirement is not met. Then you decide.
 
 ## Privacy
 

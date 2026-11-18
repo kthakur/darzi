@@ -54,6 +54,7 @@ def test_each_spec_command_is_built_or_planned() -> None:
         "export",
         "check",
         "new-run",
+        "fit",
         "status",
         "approve",
         "render",

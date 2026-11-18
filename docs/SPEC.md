@@ -601,6 +601,19 @@ What the code does:
    above `[fit] yellow`, and **red** below that.
 7. Fewer than 5 wanted requirements gives a warning. A short list can hide gaps.
 
+Details of the rules and the settings:
+
+- The quote test of rule 1 applies Unicode NFKC to the quote and to `job.md`,
+  removes soft hyphens, folds letter case and makes each run of white space
+  (line ends too) one space. It does not fold quote marks or dashes.
+- An absent `[fit]` table or key uses `green = 0.7` and `yellow = 0.4`.
+- Each `[fit]` value must be a number (not a boolean, not NaN) from 0 to 1,
+  and `yellow` must not be above `green` (equal is permitted). Otherwise
+  `facts fit` gives exit code 2.
+- A `requirements.json` with no wanted requirement is invalid input (exit
+  code 2). The message tells the agent to list the skills and the experience
+  that the post asks for.
+
 `fit.json` holds the rating, the two counts, each requirement with the text of
 its evidence, and the list of gaps. The printed summary is short: the rating,
 the counts, the hard requirements that are not met or unknown, and the gaps.

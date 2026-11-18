@@ -29,6 +29,7 @@ from darzi.facts.check import (
 )
 from darzi.facts.check_meta import load_open_questions
 from darzi.facts.export import export
+from darzi.facts.fit import FitInvalid, FitRefused, PublicLeak, fit
 from darzi.facts.public import privacy_findings, public_copy, query
 from darzi.facts.repo import (
     InputError,
@@ -93,9 +94,7 @@ from darzi.workflows import load_workflow
 JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
-PLANNED: dict[str, str] = {
-    "fit": "W-12",
-}
+PLANNED: dict[str, str] = {}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -141,6 +140,18 @@ def build_parser() -> argparse.ArgumentParser:
     source = new_cmd.add_mutually_exclusive_group(required=True)
     source.add_argument("--job", type=Path, help="job post file, or - for stdin")
     source.add_argument("--url", help="job post link: fetch one page")
+    fit_cmd = sub.add_parser(
+        "fit",
+        parents=[common],
+        help="check requirements.json of a run and write fit.json with the rating",
+        description=(
+            "Read RUN/requirements.json (the requirements schema of the package), "
+            "check each quote against RUN/job.md and each id against the public "
+            "copy of the facts and answers.yaml, and write RUN/fit.json with the "
+            "rating."
+        ),
+    )
+    fit_cmd.add_argument("run", type=Path, help="run folder with requirements.json")
     sub.add_parser("status", parents=[common], help="list all runs")
     approve_cmd = sub.add_parser(
         "approve",
@@ -219,6 +230,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.url is not None:
             return _new_run_url(args.company, args.role, args.url, args.repo, args.json)
         return _new_run(args.company, args.role, args.job, args.repo, args.json)
+    if command == "fit":
+        return _fit(args.run, args.repo, args.json)
     if command == "status":
         return _status(args.repo, args.json)
     if command == "approve":
@@ -463,6 +476,59 @@ def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
             f"{manifest['signer_fingerprint']}). Status: finalized."
         )
     )
+    return 0
+
+
+def _fit(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    # Errors found give exit code 1, invalid input exit code 2. Each error
+    # leaves the run folder as it was (docs/SPEC.md section 14).
+    try:
+        repo = find_repo(repo_arg)
+        result = fit(repo, run)
+    except PublicLeak as exc:
+        print(f"facts fit: {_leak_message(exc.findings)}", file=sys.stderr)
+        return 1
+    except (FitRefused, FitInvalid) as exc:
+        for problem in exc.problems:
+            print(_line(f"facts fit: {problem}"), file=sys.stderr)
+        print(
+            _line(
+                f"facts fit: {len(exc.problems)} problems. Correct them, then run "
+                "facts fit again. fit.json did not change."
+            ),
+            file=sys.stderr,
+        )
+        return 1 if isinstance(exc, FitRefused) else 2
+    except InputError as exc:
+        print(_line(f"facts fit: {exc}"), file=sys.stderr)
+        return 2
+    report = result.report
+    if as_json:
+        _write_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "command": "fit",
+                "target": str(run),
+                "fit": report,
+            }
+        )
+        return 0
+    counts = report["counts"]
+    _write_line(
+        f"facts fit: {report['run']} is {report['rating']}. "
+        f"{counts['wanted_with_evidence']} of {counts['wanted']} wanted "
+        "requirements have evidence."
+    )
+    for label, key in (
+        ("hard not met", "hard_not_met"),
+        ("hard unknown", "hard_unknown"),
+        ("gap", "gaps"),
+    ):
+        for item in report[key]:
+            _write_line(f'{label}: {item["id"]} "{item["quote"]}"')
+    for warning in report["warnings"]:
+        _write_line(f"warning: {warning}")
+    _write_line(f"facts fit: wrote {run / 'fit.json'}.")
     return 0
 
 

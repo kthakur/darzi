@@ -50,30 +50,47 @@ line says. Do not try to correct the set-up yourself.
    Then run `facts new-run` again with `--job -` and the pasted text. In no
    other case do you delete a run folder.
 
-2. **Choose the job type.** Read the selections in `selections/`. Choose the
+2. **Rate the fit.** Read `RUN/job.md`. Write `RUN/requirements.json`
+   (see `facts fit --help` and the requirements schema). For each
+   requirement, copy its words from `job.md` exactly as `quote`; copy from
+   one line or one list item. A hard requirement is a condition that no
+   wording can change: the right to work, the location or the days on site,
+   a required degree, licence or clearance. Give it `status` `met`,
+   `not_met` or `unknown`, and for `met` or `not_met` a `basis`:
+   `answers:<answer id>` or a fact id. A wanted requirement is a skill or an
+   experience that the post asks for. Its `evidence` is a list of bullet
+   ids and `skill:<name>` from `facts public`; an empty list means no
+   evidence. Do not stretch a fact to match. Run `facts fit RUN`. If it
+   reports errors, correct `RUN/requirements.json` and run it again. Send
+   the owner a short message: the rating, the counts, the hard
+   requirements that are not met or unknown, and the gaps. If a hard
+   requirement is `not_met`, STOP and ask the owner if you must continue.
+   Otherwise continue: the rating never blocks a run.
+
+3. **Choose the job type.** Read the selections in `selections/`. Choose the
    one that fits the post. Write its name (the file name without `.yaml`)
    as `type` in `RUN/run.yaml`. Do not write `selection_hash`: no command
    gives that value yet, so leave it as `new-run` wrote it.
 
-3. **Export.** Run `facts export selections/<type>.yaml --run RUN`. This
+4. **Export.** Run `facts export selections/<type>.yaml --run RUN`. This
    writes `base.json` and `base.map.json`. If the export refuses the
    selection, stop and tell the owner.
 
-4. **Tailor.** Copy `RUN/base.json` to `RUN/tailored.json`. Edit the order
+5. **Tailor.** Copy `RUN/base.json` to `RUN/tailored.json`. Edit the order
    and the wording for this job. Write `RUN/cover_letter.md`. Use only facts
    that are in `base.json`.
 
-5. **Check.** Run `facts check RUN`. Correct each error and run it again, at
+6. **Check.** Run `facts check RUN`. Correct each error and run it again, at
    most 3 rounds. Then ask the owner.
 
-6. **Draft.** Run `facts render RUN --draft`. It prints the page count. If
+7. **Draft.** Run `facts render RUN --draft`. It prints the page count. If
    the layout must change, write the `print_settings` mapping in
    `RUN/run.yaml` and render again. Its keys replace the defaults:
    `pageSize` (default `LETTER`); `fontSize`, `sectionSpacing`,
    `itemSpacing` and `lineHeight` (each a level from 1 to 5; the defaults
    are 3, 3, 2 and 3); `marginTop`, `marginBottom`, `marginLeft` and
-   `marginRight` (in mm, default 10); and `compactMode` (`true` or
-   `false`). For example:
+   `marginRight` (in mm, from 5 to 25, default 10); and `compactMode`
+   (`true` or `false`). For example:
 
    ```yaml
    print_settings:
@@ -84,18 +101,18 @@ line says. Do not try to correct the set-up yourself.
 
    Never remove content to fit a page.
 
-7. **Show the owner.** Send a short message: the main changes, the summary,
+8. **Show the owner.** Send a short message: the main changes, the summary,
    the cover letter, the result of `facts check` and the page count. Ask the
    owner to approve.
 
-8. **Wait for the approval.** The owner runs `facts approve RUN` at a
+9. **Wait for the approval.** The owner runs `facts approve RUN` at a
    terminal on the desktop. You do not run it. Wait until the owner says
    that the approval is done.
 
-9. **Finalize.** Run `facts finalize RUN`. It makes the files in `RUN/out/`
+10. **Finalize.** Run `facts finalize RUN`. It makes the files in `RUN/out/`
    and writes `RUN/manifest.json`. If it refuses, stop and tell the owner.
 
-10. **Fill the form.** Make sure that `RUN/run.yaml` has `apply_url`, the
+11. **Fill the form.** Make sure that `RUN/run.yaml` has `apply_url`, the
     link of the employer's application form. `facts fill-plan` refuses a run
     without it. With `--url`, step 1 wrote the job link there: if the form is
     on another page, ask the owner for its link. Run `facts fill-plan RUN`.
@@ -108,6 +125,6 @@ line says. Do not try to correct the set-up yourself.
     Submit. Write `RUN/form_fill.md` with the fields that you filled and the
     fields that are still empty. Tell the owner that the form is ready.
 
-11. **Record the submission.** The owner submits the form. Only after the
+12. **Record the submission.** The owner submits the form. Only after the
     owner tells you that the application was submitted, run
     `facts submitted RUN`.
