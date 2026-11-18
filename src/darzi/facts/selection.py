@@ -57,6 +57,7 @@ def is_approved(
         selection_target(path),
         selection_record(path),
         selection_hash(selection),
+        target_path=path,
     )
 
 

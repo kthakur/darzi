@@ -68,7 +68,12 @@ from darzi.runs.runs import (
     print_settings,
     run_name,
 )
-from darzi.runs.signing import run_target, selection_record, selection_target
+from darzi.runs.signing import (
+    run_target,
+    selection_record,
+    selection_target,
+    target_problem,
+)
 from darzi.runs.status import RunRow, list_runs
 from darzi.schemas import MASTER, RULES, SELECTION, load_schema
 from darzi.sourcing.fetch import fetch
@@ -519,7 +524,12 @@ def approve_steps(target: Path, repo_arg: Path | None, ask: Ask, day: dt.date) -
         problem = sign_problem(repo, settings)
         if problem:
             raise InputError(f"cannot sign: {problem}. Fix facts.toml first.")
-        if is_file(target):
+        kind = "selection" if is_file(target) else "run"
+        # The target must be in this data root, before a file is read or written.
+        problem = target_problem(repo, kind, target)
+        if problem:
+            raise InputError(f"{problem}. Pass a target of this data root or --repo.")
+        if kind == "selection":
             return _approve_selection(target, repo, settings, ask, day)
         return _approve_run(target, repo, settings, ask, day)
     except InputError as exc:
@@ -556,6 +566,7 @@ def _approve_selection(
         selection_record(path),
         digest,
         day,
+        target_path=path,
     )
     _approved(path, day, digest, verdict.fingerprint)
     return 0
@@ -590,7 +601,14 @@ def _approve_run(
     # The hash comes from the same loaded data that the review showed.
     digest = content_hash(run.tailored, run.letter)
     verdict = record_and_sign(
-        repo, settings, "run", run_target(run_dir), run_dir / APPROVAL, digest, day
+        repo,
+        settings,
+        "run",
+        run_target(run_dir),
+        run_dir / APPROVAL,
+        digest,
+        day,
+        target_path=run_dir,
     )
     _approved(run_dir, day, digest, verdict.fingerprint)
     return 0
