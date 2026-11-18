@@ -17,7 +17,7 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -264,17 +264,22 @@ def test_the_approved_content_is_read_one_time(run_dir: Path) -> None:
     changed = copy.deepcopy(run.tailored)
     changed["workExperience"][0]["description"][0] = "Wrote a text nobody approved."
     cli = PdfCli()
-    calls: list[str] = []
+    renderer = _renderer(run_dir, cli)
 
-    def runner(cmd: Sequence[str], stdin: str) -> tuple[int, str, str]:
-        # Change the files on disk after finalize has read them.
-        if not calls:
-            (run_dir / "tailored.json").write_text(json.dumps(changed), "utf-8")
-            (run_dir / "cover_letter.md").write_text("A new letter.\n", "utf-8")
-        calls.append(cmd[-2])
-        return cli(cmd, stdin)
+    def renderer_for(_repo: Path, _render: object) -> ResumeMatcher:
+        # finalize calls this after the gate: change the files on disk now.
+        (run_dir / "tailored.json").write_text(json.dumps(changed), "utf-8")
+        (run_dir / "cover_letter.md").write_text("A new letter.\n", "utf-8")
+        return renderer
 
-    _finalize(run_dir, cli=runner)
+    finalize(
+        run_dir.parents[1],
+        run_dir,
+        renderer_for=renderer_for,
+        count_pages=lambda _path: 1,
+        office_ready=lambda: True,
+        today=DAY,
+    )
     manifest = _manifest(run_dir)
     assert manifest["approval_hash"] == approved
     sent = next(args for tool, args in cli.calls if tool == "create_master_resume")
