@@ -22,6 +22,7 @@ from darzi import __version__, cli
 from darzi.cli import main
 from darzi.paths import exists
 from darzi.runs.runs import APPLICATIONS, JOB, RUN_YAML
+from darzi.sourcing import fetch as fetch_module
 from darzi.sourcing.fetch import (
     MAX_BODY_BYTES,
     MAX_REDIRECTS,
@@ -772,3 +773,49 @@ def test_cli_job_run_yaml_has_no_apply_url(
     assert main([*args, "--repo", str(root)]) == 0
     run = Path(capsys.readouterr().out.strip())
     assert "apply_url" not in yaml.safe_load((run / RUN_YAML).read_text("utf-8"))
+
+
+PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+
+
+def _set_proxy_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set each proxy variable of the environment to a fake proxy."""
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name in PROXY_VARIABLES:
+        monkeypatch.setenv(name, "http://proxy.example.com:3128")
+        monkeypatch.setenv(name.lower(), "http://proxy.example.com:3128")
+
+
+def test_the_client_ignores_proxy_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_proxy_variables(monkeypatch)
+    client = fetch_module._client(None)  # pyright: ignore[reportPrivateUsage]
+    with client:
+        assert client.trust_env is False
+        assert client.follow_redirects is False
+
+
+def test_a_proxy_variable_does_not_send_the_fetch_to_a_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fetch uses the real transport of httpx here, with no fake transport.
+    # Each transport records its proxy, and the request gets a fake page.
+    _set_proxy_variables(monkeypatch)
+    proxies: dict[int, object] = {}
+    used: list[object] = []
+    init = httpx.HTTPTransport.__init__
+
+    def record_init(self: httpx.HTTPTransport, *args: Any, **kwargs: Any) -> None:
+        proxies[id(self)] = kwargs.get("proxy")
+        init(self, *args, **kwargs)
+
+    def handle(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        used.append(proxies[id(self)])
+        return _html(request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "__init__", record_init)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
+    result = fetch(URL, resolver=_resolver())
+    assert isinstance(result, FetchOk)
+    assert used == [None]
+    assert all(proxy is None for proxy in proxies.values())

@@ -53,6 +53,17 @@ give `--repo PATH`.
 | `facts.toml` | Settings | You |
 | `allowed_signers` | Your public approval key | You |
 
+The data root installs darzi from this repo at a release tag, for example
+`v0.2.0` (`<owner>` is the account that holds this repo):
+
+```sh
+uv add "darzi @ git+https://github.com/<owner>/darzi@v0.2.0"
+```
+
+After a new tag, change the tag in the `pyproject.toml` of the data root.
+Then run `uv lock`, `uv sync`, `uv run facts --version` (it prints the new
+version) and `uv run facts doctor`.
+
 ### 2. `facts.toml`
 
 An example with synthetic values:
@@ -303,7 +314,8 @@ item must be there, in the approved order.
   user name or password, and each address that is not a public internet
   address. It follows at most 5 redirects and checks each one.
 - **Limit:** the host name is looked up again when the connection starts.
-- **Limit:** proxy settings of the environment apply to the fetch.
+- **No proxy:** the fetch ignores the proxy settings of the environment
+  (`HTTPS_PROXY` and the others). It connects to the job site directly.
 - **Limit:** a login page can return text. Read `job.md`. If it is not the
   job post, paste the text.
 

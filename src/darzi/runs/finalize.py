@@ -163,10 +163,15 @@ def _plain_run_path(run_dir: Path) -> Path:
 
     The path `.` alone (`facts finalize .` inside the run folder) becomes the
     real path of the current folder, so its name is the real folder name.
-    Each other path with a `.` or `..` part, or with the name "", "." or "..",
+    Each other path with a `..` part, or with the name "" (for example `/`),
     is refused before anything is read. Such a path can name the run folder,
     but the folder name, the commit and the copy would then use the wrong
     folder.
+
+    Only `..` parts and a bare `.` reach this test. Python's path handling
+    removes each other `.` part (`a/./b` becomes `a/b`, and `./a` becomes
+    `a`), and such a path still names the right folder. The test of `.`
+    parts and of the names "." and ".." stays as a guard.
     """
     if run_dir == Path("."):
         try:
