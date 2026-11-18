@@ -17,6 +17,7 @@ comes from the owner or from an agent, and the page is untrusted data:
 
 A request sends the default headers of httpx and the User-Agent
 `darzi/<version>`. It sends no cookie of its own and no Authorization header.
+The fetch ignores the proxy settings of the environment (`trust_env=False`).
 """
 
 import codecs
@@ -236,10 +237,16 @@ class _Hop:
 
 
 def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
-    """Return a client that does not follow redirects (fetch() does that)."""
+    """Return a client that does not follow redirects (fetch() does that).
+
+    The client ignores the proxy settings of the environment
+    (`trust_env=False`), as the clients of `doctor` do. So the request goes
+    to the host that the guard tested, not to a proxy.
+    """
     return httpx.Client(
         timeout=TIMEOUT,
         follow_redirects=False,
+        trust_env=False,
         headers={"User-Agent": USER_AGENT},
         transport=transport,
     )
