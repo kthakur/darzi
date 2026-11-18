@@ -51,8 +51,9 @@ line says. Do not try to correct the set-up yourself.
    other case do you delete a run folder.
 
 2. **Choose the job type.** Read the selections in `selections/`. Choose the
-   one that fits the post. Write `type` and `selection_hash` in
-   `RUN/run.yaml`.
+   one that fits the post. Write its name (the file name without `.yaml`)
+   as `type` in `RUN/run.yaml`. Do not write `selection_hash`: no command
+   gives that value yet, so leave it as `new-run` wrote it.
 
 3. **Export.** Run `facts export selections/<type>.yaml --run RUN`. This
    writes `base.json` and `base.map.json`. If the export refuses the
@@ -66,8 +67,22 @@ line says. Do not try to correct the set-up yourself.
    most 3 rounds. Then ask the owner.
 
 6. **Draft.** Run `facts render RUN --draft`. It prints the page count. If
-   the layout must change, write the print settings in `RUN/run.yaml` and
-   render again. Never remove content to fit a page.
+   the layout must change, write the `print_settings` mapping in
+   `RUN/run.yaml` and render again. Its keys replace the defaults:
+   `pageSize` (default `LETTER`); `fontSize`, `sectionSpacing`,
+   `itemSpacing` and `lineHeight` (each a level from 1 to 5; the defaults
+   are 3, 3, 2 and 3); `marginTop`, `marginBottom`, `marginLeft` and
+   `marginRight` (in mm, default 10); and `compactMode` (`true` or
+   `false`). For example:
+
+   ```yaml
+   print_settings:
+     fontSize: 2
+     marginTop: 8
+     marginBottom: 8
+   ```
+
+   Never remove content to fit a page.
 
 7. **Show the owner.** Send a short message: the main changes, the summary,
    the cover letter, the result of `facts check` and the page count. Ask the

@@ -1,8 +1,10 @@
 """`facts doctor`: check the set-up of one data root (docs/SPEC.md section 6).
 
 Each check gives one `Check` with the status OK, WARN or FAIL. A check that
-fails does not stop the other checks. Only an absent data root or a
-`facts.toml` that is not valid stops `doctor` (InputError, exit code 2).
+fails does not stop the other checks: `run_doctor()` turns an exception that a
+check does not catch into one FAIL line with the name of the exception class.
+Only an absent data root or a `facts.toml` that is not valid stops `doctor`
+(InputError, exit code 2).
 
 Rules for each check (hard rule 5):
 
@@ -82,6 +84,10 @@ MAX_HEALTH_BYTES = 64 * 1024
 MAX_SIGNERS_BYTES = 64 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MANIFEST = "manifest.json"
+# The SQLite file that the Resume Matcher backend makes in its data folder
+# (`settings.sqlite_path` in apps/backend/app/config.py). A CLI call makes it
+# when it is absent, so `doctor` runs the CLI only when the file is there.
+RM_DATABASE = "resume_matcher.db"
 
 SEMVER = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 SHA256_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]+")
@@ -192,27 +198,46 @@ def run_doctor(
         Check("data root", OK, str(repo)),
         Check("facts.toml", OK, "valid"),
     ]
-    steps: list[Callable[[_State, Tools], Check]] = [
-        _approval_settings,
-        _allowed_signers,
-        _ssh_keygen,
-        _key_file,
-        _key_fingerprint,
-        _key_passphrase,
-        _agent,
-        _signer_history,
-        _renderer_settings,
-        _renderer_commit,
-        lambda s, t: _release(s, t, offline),
-        _renderer_records,
-        lambda s, t: _health(s, t, "backend", "backend_url"),
-        lambda s, t: _health(s, t, "frontend", "frontend_url"),
-        _libreoffice,
-        _form,
+    steps: list[tuple[str, Callable[[_State, Tools], Check]]] = [
+        ("approval settings", _approval_settings),
+        ("allowed_signers", _allowed_signers),
+        ("ssh-keygen", _ssh_keygen),
+        ("key file", _key_file),
+        ("key fingerprint", _key_fingerprint),
+        ("key passphrase", _key_passphrase),
+        ("ssh-agent", _agent),
+        ("signer history", _signer_history),
+        ("renderer settings", _renderer_settings),
+        ("renderer commit", _renderer_commit),
+        ("release tags", lambda s, t: _release(s, t, offline)),
+        ("renderer records", _renderer_records),
+        ("renderer backend", lambda s, t: _health(s, t, "backend", "backend_url")),
+        ("renderer frontend", lambda s, t: _health(s, t, "frontend", "frontend_url")),
+        ("LibreOffice", _libreoffice),
+        ("form settings", _form),
     ]
-    for step in steps:
-        checks.append(step(state, tools))
+    for name, step in steps:
+        checks.append(_guarded(name, step, state, tools))
     return checks
+
+
+def _guarded(
+    name: str, step: Callable[[_State, Tools], Check], state: _State, tools: Tools
+) -> Check:
+    """Run one check. An exception that the check does not catch is one FAIL.
+
+    This keeps the rule that one check never stops the other checks.
+    KeyboardInterrupt and SystemExit are not an Exception, so they still stop.
+    """
+    try:
+        return step(state, tools)
+    except Exception as exc:  # noqa: BLE001 - one check must not stop the others
+        return Check(
+            name,
+            FAIL,
+            f"the check stopped with {type(exc).__name__}. Correct the file or "
+            "the setting that it reads, then run facts doctor again.",
+        )
 
 
 def _versions() -> Check:
@@ -521,7 +546,7 @@ def _manifest(path: Path) -> dict[str, Any] | None:
         if len(data) > MAX_MANIFEST_BYTES:
             return None
         value: Any = json.loads(data.decode("utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -640,7 +665,7 @@ def _release(state: _State, tools: Tools, offline: bool) -> Check:
         if status != 200:
             return Check(name, WARN, f"not checked: GitHub gave HTTP {status}")
         tags = _tag_list(body)
-    except (httpx.HTTPError, _TooLarge, ValueError) as exc:
+    except (httpx.HTTPError, _TooLarge, ValueError, RecursionError) as exc:
         return Check(name, WARN, f"not checked: {type(exc).__name__}: {exc}")
     newest = newest_tag(tags)
     if newest is None:
@@ -665,11 +690,24 @@ def _renderer_records(state: _State, tools: Tools) -> Check:
         return Check(
             name, OK, f"{config.data_dir} does not exist yet; the first render makes it"
         )
+    if not is_file(config.data_dir / RM_DATABASE):
+        # The CLI would make the database file. `doctor` writes nothing.
+        return Check(
+            name,
+            OK,
+            f"{config.data_dir} holds no {RM_DATABASE} yet; the first render makes it",
+        )
     renderer = ResumeMatcher(config, runner=_list_runner(tools))
     try:
         scratch = renderer.scratch_id()
     except InputError as exc:
         return Check(name, FAIL, str(exc))
+    except RecursionError:
+        return Check(
+            name,
+            FAIL,
+            "resume-matcher list_resumes gave JSON that is nested too deeply.",
+        )
     if scratch is None:
         return Check(name, OK, "the data folder holds no record")
     return Check(name, OK, "the data folder holds only the darzi scratch record")

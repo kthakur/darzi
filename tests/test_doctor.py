@@ -104,6 +104,8 @@ class Setup:
         self.root = tmp_path / "root"
         shutil.copytree(DATA, self.root)
         (self.root / ".rm-data").mkdir()
+        self.database = self.root / ".rm-data" / doctor.RM_DATABASE
+        self.database.write_bytes(b"")
         self.key = tmp_path / "keys" / "approval_key"
         self.key.parent.mkdir()
         self.key.write_text("not a real key\n", encoding="utf-8")
@@ -571,10 +573,57 @@ def test_the_scratch_record_is_ok(setup: Setup) -> None:
 
 
 def test_no_data_folder_starts_no_cli(setup: Setup) -> None:
+    setup.database.unlink()
     (setup.root / ".rm-data").rmdir()
     assert setup.doctor()["renderer records"].status == OK
     assert not [a for a, _ in setup.calls if a[0] == "/usr/bin/env"]
     assert not (setup.root / ".rm-data").exists()
+
+
+def test_a_data_folder_with_no_database_starts_no_cli(setup: Setup) -> None:
+    setup.database.unlink()
+    check = setup.doctor()["renderer records"]
+    assert check.status == OK
+    assert f"holds no {doctor.RM_DATABASE} yet; the first render makes it" in (
+        check.detail
+    )
+    assert not [a for a, _ in setup.calls if a[0] == "/usr/bin/env"]
+    assert list((setup.root / ".rm-data").iterdir()) == []
+
+
+def test_deeply_nested_json_of_the_list_call_is_one_fail(setup: Setup) -> None:
+    setup.answers["records"] = (0, "[" * 200_000, "")
+    checks = setup.doctor()
+    assert checks["renderer records"].status == FAIL
+    assert "nested too deeply" in checks["renderer records"].detail
+    assert checks["LibreOffice"].status == OK
+    assert checks["form settings"].status == OK
+
+
+def test_a_deeply_nested_manifest_is_skipped(setup: Setup) -> None:
+    run = setup.root / "applications" / "2026-01-02-acme-test"
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "manifest.json").write_text("[" * 200_000, encoding="utf-8")
+    checks = setup.doctor()
+    assert checks["signer history"].status == OK
+    assert set(statuses(checks).values()) == {OK}
+
+
+def test_an_unexpected_exception_is_one_fail_line(
+    setup: Setup, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken() -> Path | None:
+        raise RuntimeError("synthetic failure")
+
+    tools = setup.tools()
+    tools = Tools(tools.run, tools.transport, tools.resolver, broken)
+    assert cli._doctor(setup.root, False, False, tools) == 1  # pyright: ignore[reportPrivateUsage]
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == len(NAMES) + 1
+    [office] = [line for line in lines if " LibreOffice: " in line]
+    assert office.startswith("FAIL LibreOffice: the check stopped with RuntimeError.")
+    assert any(line.startswith("ok   form settings:") for line in lines)
+    assert lines[-1] == "facts doctor: 19 checks, 0 WARN, 1 FAIL."
 
 
 def test_the_list_runner_refuses_each_other_tool(setup: Setup) -> None:
@@ -659,6 +708,7 @@ def test_offline_sends_no_request(setup: Setup) -> None:
         httpx.ConnectError("no network"),
         httpx.Response(403, json={"message": "rate limit"}),
         httpx.Response(200, text="not json"),
+        httpx.Response(200, content=b"[" * 200_000),
         httpx.Response(200, content=b"[" + b" " * (2 * 1024 * 1024) + b"]"),
         httpx.Response(301, headers={"Location": "https://example.com/"}),
     ],

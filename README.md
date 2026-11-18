@@ -195,8 +195,12 @@ Each command accepts `--repo PATH` and `--json`. Exit codes: 0 = no errors,
 - **What `doctor` tests.** It tests the passphrase and `ssh-agent`.
 - **What `doctor` cannot test.** It cannot see the macOS keychain or another
   use of the key.
-- **A selection approval** covers the fact ids, the headline, the skills and
-  the layout. It does not cover the fact text in `master.yaml`.
+- **A selection approval** covers the whole selection file except its old
+  `approval` block: the job type (`type`), the `tier`, the headline, the
+  facts for the summary (`summary_basis`), the section order, the fact ids
+  of each section, the skills and the page limit (`max_pages`). A change to
+  one of these makes the approval invalid. It does not cover the fact text
+  in `master.yaml`.
 - **A run approval** covers the final résumé JSON and the cover letter. It is
   the last gate.
 - **An older approval** stays valid for the exact older content that it
@@ -249,7 +253,10 @@ item must be there, in the approved order.
 ### `facts new-run --url`
 
 - **What one fetch sends:** one GET request with the User-Agent
-  `darzi/<version>`. No cookie, no login, no data about you.
+  `darzi/<version>`. No login and no data about you. No cookie from your
+  computer or your browser is sent. A cookie that the job site sets during
+  one fetch can go back to that site in a later redirect of the same fetch.
+  darzi keeps no cookie after the fetch.
 - **The guard:** it refuses a URL that is not http or https, a URL with a
   user name or password, and each address that is not a public internet
   address. It follows at most 5 redirects and checks each one.
