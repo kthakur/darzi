@@ -1025,3 +1025,51 @@ def test_a_character_that_word_cannot_hold(
     # The work folder is removed; nothing in the data root changed.
     assert _tree(run.parents[1]) == before
     assert not (run / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("value", ["'12.5'", "abc"])
+def test_a_print_setting_that_is_not_a_whole_number(
+    tmp_path: Path,
+    fake_tools: PdfCli,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+) -> None:
+    run = _make_run(tmp_path)
+    (run / "run.yaml").write_text(
+        RUN_YAML + f"  marginTop: {value}\n", encoding="utf-8"
+    )
+    assert approve(run.parents[1], run) == 0
+    capsys.readouterr()
+    before = _tree(run.parents[1])
+    assert _cli(run) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1, err
+    assert "the print_settings value of marginTop is not a whole number" in err
+    assert "a whole number of millimetres" in err
+    assert "tailored.json" not in err and "Word file" not in err
+    assert _tree(run.parents[1]) == before
+    assert not (run / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("builder", ["resume_docx", "letter_docx"])
+def test_a_value_error_without_a_bad_character_is_not_a_refusal(
+    run_dir: Path,
+    fake_tools: PdfCli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    builder: str,
+) -> None:
+    # Only a character that a Word file cannot hold gives the refusal; each
+    # other ValueError of the Word builders goes out unchanged, as before F-3.
+    def fail(*args: object) -> None:
+        raise ValueError("a synthetic builder failure")
+
+    monkeypatch.setattr(f"darzi.runs.finalize.{builder}", fail)
+    capsys.readouterr()
+    with pytest.raises(ValueError, match="a synthetic builder failure"):
+        _cli(run_dir)
+    _, err = capsys.readouterr()
+    assert "tailored.json" not in err and "cover_letter.md" not in err
+    assert not (run_dir / "manifest.json").exists()

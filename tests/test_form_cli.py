@@ -998,6 +998,14 @@ def test_an_unsigned_value_is_in_quotes(run_dir: Path, capsys: Capture) -> None:
     assert f'\n  {item["id"]}: "{question}" -> "{_escaped(answer)}"\n' in out
     keys = [x for x in out.splitlines() if x.lstrip().startswith("apply_url:")]
     assert keys == [f'  apply_url: "{APPLY}"'], keys
+    # The rule names the closing quote mark and the escapes in words. It has no
+    # backslash, so no backslash stands next to a period of the rule.
+    rule = next(x for x in out.splitlines() if "outer quotes" in x)
+    assert "\\" not in rule
+    assert "Only the plain ASCII double quote mark (U+0022) closes a value" in rule
+    assert "Any other quote-like mark is part of the value." in rule
+    assert "Where the plan shows backslash-quote, type a quote mark." in rule
+    assert "Where it shows two backslashes, type one backslash." in rule
 
 
 def test_each_line_of_the_letter_has_the_mark(

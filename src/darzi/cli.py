@@ -621,8 +621,14 @@ LETTER_MARK = "  | "
 TEXT_PLAN_RULES = (
     f'darzi writes "{LETTER_MARK.strip()} " in front of each line of the cover '
     "letter: do not paste this mark.",
-    "A value in double quotes is from run.yaml or answers.yaml: type it without "
-    'the outer quotes, and type \\" as " and \\\\ as \\.',
+    # No backslash in this rule: an agent could read one next to a period as an
+    # escape.
+    "A value in double quotes is from run.yaml or answers.yaml. Type each value "
+    "without the outer quotes. Only the plain ASCII double quote mark (U+0022) "
+    "closes a value: the mark at the end of the line, or the mark before the "
+    "arrow. Any other quote-like mark is part of the value. Where the plan shows "
+    "backslash-quote, type a quote mark. Where it shows two backslashes, type one "
+    "backslash.",
 )
 
 

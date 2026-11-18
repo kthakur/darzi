@@ -54,7 +54,12 @@ from darzi.facts.repo import InputError, load_master, load_rules
 from darzi.facts.validate import Finding
 from darzi.paths import exists, is_dir, is_file
 from darzi.render.resume_matcher import ADAPTER, ResumeMatcher
-from darzi.render.word import letter_docx, resume_docx
+from darzi.render.word import (
+    DEFAULT_LEVELS,
+    FONT_SIZE_PX,
+    letter_docx,
+    resume_docx,
+)
 from darzi.runs.approve import run_is_approved, unreviewable
 from darzi.runs.lock import lock_path as lock_path
 from darzi.runs.lock import locked
@@ -407,6 +412,7 @@ def _build(
     Refused, RoundTripFailed, RenderError or InputError.
     """
     run, settings = passed.run, passed.settings
+    _check_word_settings(settings)
     stem = _file_stem(run.tailored)
     pdf = work / f"{stem}_Resume.pdf"
     word = work / f"{stem}_Resume.docx"
@@ -415,7 +421,10 @@ def _build(
     try:
         resume_docx(run.tailored, word, settings)
     except ValueError as exc:
-        raise _not_in_word(_field_with_bad_char(run.tailored), "tailored.json") from exc
+        found = _field_with_bad_char(run.tailored)
+        if found is None:
+            raise
+        raise _not_in_word(found, "tailored.json") from exc
     built: list[tuple[str, Path, int]] = [(RESUME_PDF, pdf, result.pages)]
     built.append((RESUME_WORD, word, _pages(count_pages, word)))
     findings = check_resume(run.tailored, pdf) + check_resume(run.tailored, word)
@@ -423,8 +432,10 @@ def _build(
         try:
             letter_docx(run.letter, letter)
         except ValueError as exc:
-            where = _field_with_bad_char(run.letter, "the cover letter")
-            raise _not_in_word(where, "cover_letter.md") from exc
+            found = _field_with_bad_char(run.letter, "the cover letter")
+            if found is None:
+                raise
+            raise _not_in_word(found, "cover_letter.md") from exc
         built.append((LETTER_WORD, letter, _pages(count_pages, letter)))
         findings += check_letter(run.letter, letter)
     if findings:
@@ -443,6 +454,36 @@ def _build(
         for kind, path, pages in built
     ]
     return files, result.template, result.page_size
+
+
+# The print settings that the Word résumé reads as whole numbers (see
+# word_layout()), with the accepted values of each.
+_LEVELS = ", ".join(str(level) for level in sorted(FONT_SIZE_PX))
+WORD_WHOLE_NUMBERS = {
+    **{key: f"one of {_LEVELS}" for key in DEFAULT_LEVELS},
+    **{
+        f"margin{side}": "a whole number of millimetres, such as 10"
+        for side in ("Top", "Bottom", "Left", "Right")
+    },
+}
+
+
+def _check_word_settings(settings: dict[str, Any]) -> None:
+    """Raise InputError (exit code 2) for a print setting that is not a number.
+
+    word_layout() calls int() on each key of WORD_WHOLE_NUMBERS. Without this
+    check, a value such as '12.5' stops the build with a ValueError.
+    """
+    for key, accepted in WORD_WHOLE_NUMBERS.items():
+        if key not in settings:
+            continue
+        try:
+            int(settings[key])
+        except (TypeError, ValueError):
+            raise InputError(
+                f"{RUN_YAML}: the print_settings value of {key} is not a whole "
+                f"number. Write {accepted}, then finalize again."
+            ) from None
 
 
 def _xml_char(c: str) -> bool:
@@ -479,13 +520,8 @@ def _field_with_bad_char(value: Any, where: str = "") -> tuple[str, str] | None:
     return None
 
 
-def _not_in_word(found: tuple[str, str] | None, source: str) -> Refused:
+def _not_in_word(found: tuple[str, str], source: str) -> Refused:
     """Return the refusal for a value that the Word library cannot hold."""
-    if found is None:
-        return Refused(
-            f"a value of {source} has a character that a Word file cannot hold. "
-            f"Remove it from {source}, then approve again."
-        )
     where, char = found
     return Refused(
         f"{where} has the character U+{ord(char):04X}, which a Word file cannot "
