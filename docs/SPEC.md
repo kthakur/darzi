@@ -204,7 +204,7 @@ not http or https and each address that is not a public internet address.
 | `facts finalize RUN` | Verifies the approval, makes the PDF and Word files, runs the round-trip check, writes `manifest.json`. Refuses a submitted run. | Changed |
 | `facts finalize RUN --handover` | The same, with no approval. `facts check` must have no errors. The manifest says `"signed": false`. | New |
 | `facts answers` | Checks `answers.yaml` | Port |
-| `facts fill-plan RUN` | Prints the only data that a form fill can use. Verifies the approval and the file hashes. Refuses a manifest with `"signed": false`. | Port |
+| `facts fill-plan RUN` | Prints the only data that a form fill can use. Verifies the approval and the file hashes. Refuses a manifest with `"signed": false`. It prints only when each check passes, in this order: the run is a real `applications/<run>` folder of this data root with no link, the run lock is free, and the status is `finalized`; the signature approves `tailored.json` and the cover letter as read; the manifest says `"signed": true` and names this run, this content hash and this signer key; `out/` holds exactly the files that `finalize` writes, with the manifest hashes; the Word files built again are byte-equal and the round-trip check passes again; `answers.yaml` has no error; and `run.yaml` has an http or https `apply_url` whose host is not in `[form] blocked_hosts` (a missing `[form]` table is invalid input). | Port |
 | `facts submitted RUN` | Sets the status and the date in `run.yaml` | Changed |
 | `facts status` | Lists all runs: date, company, role, type, status | New |
 | `facts doctor` | Checks the renderer, LibreOffice, the signer key and its fingerprint | Changed |

@@ -51,6 +51,7 @@ from darzi.render.port import Renderer, RenderError
 from darzi.runs.approve import (
     Ask,
     confirm,
+    one_line,
     record_and_sign,
     require_terminal,
     run_text,
@@ -60,6 +61,13 @@ from darzi.runs.approve import (
     unreviewable,
 )
 from darzi.runs.finalize import Refused, RoundTripFailed, finalize
+from darzi.runs.form import (
+    ANSWERS_NOTE,
+    FormRefused,
+    answers_report,
+    fill_plan,
+    mark_submitted,
+)
 from darzi.runs.runs import (
     APPLICATIONS,
     APPROVAL,
@@ -75,7 +83,7 @@ from darzi.runs.signing import (
     target_problem,
 )
 from darzi.runs.status import RunRow, list_runs
-from darzi.schemas import MASTER, RULES, SELECTION, load_schema
+from darzi.schemas import ANSWERS, MASTER, RULES, SELECTION, load_schema
 from darzi.sourcing.fetch import fetch
 from darzi.sourcing.model import FetchFailure
 
@@ -83,9 +91,6 @@ JSON_SCHEMA_VERSION = 1
 
 # Command -> the work item that builds it (docs/SPEC.md section 11).
 PLANNED: dict[str, str] = {
-    "answers": "W-9",
-    "fill-plan": "W-9",
-    "submitted": "W-9",
     "doctor": "W-11",
     "workflow": "W-11",
     "fit": "W-12",
@@ -161,6 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="build the files of an approved run in out/ and write manifest.json",
     )
     finalize_cmd.add_argument("run", type=Path, help="run folder with approval.json")
+    sub.add_parser("answers", parents=[common], help="check answers.yaml")
+    plan_cmd = sub.add_parser(
+        "fill-plan",
+        parents=[common],
+        help="print the only data that a form fill can use (each check must pass)",
+    )
+    plan_cmd.add_argument("run", type=Path, help="a finalized run folder")
+    submitted_cmd = sub.add_parser(
+        "submitted",
+        parents=[common],
+        help="record that the owner submitted the application",
+    )
+    submitted_cmd.add_argument("run", type=Path, help="a finalized run folder")
     for name, item in PLANNED.items():
         sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
@@ -196,6 +214,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _render(args.run, args.repo, args.draft, args.json)
     if command == "finalize":
         return _finalize(args.run, args.repo, args.json)
+    if command == "answers":
+        return _answers(args.repo, args.json)
+    if command == "fill-plan":
+        return _fill_plan(args.run, args.repo, args.json)
+    if command == "submitted":
+        return _submitted(args.run, args.repo, args.json)
     print(
         f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
         file=sys.stderr,
@@ -422,6 +446,98 @@ def _finalize(run: Path, repo_arg: Path | None, as_json: bool) -> int:
             f"{manifest['signer_fingerprint']}). Status: finalized."
         )
     )
+    return 0
+
+
+def _answers(repo_arg: Path | None, as_json: bool) -> int:
+    try:
+        repo = find_repo(repo_arg)
+        result = answers_report(repo, load_schema(ANSWERS), load_rules(repo))
+    except InputError as exc:
+        print(_line(f"facts answers: {exc}"), file=sys.stderr)
+        return 2
+    findings = result.findings
+    report = _report_data("answers", repo, findings)
+    if as_json:
+        _write_json(report)
+    else:
+        # A value of answers.yaml can be in a finding: one line for each part.
+        for f in findings:
+            _write_line(f"{f.severity} {f.rule} {f.location}: {f.message}")
+            if f.text:
+                _write_line(f"    text: {f.text}")
+        _write_line(
+            f"answers.yaml: {report['errors']} errors, {report['warnings']} warnings."
+        )
+    return 1 if report["errors"] else 0
+
+
+def _fill_plan(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    # Each refusal prints one line on stderr and nothing on stdout. No flag
+    # changes a check (docs/SPEC.md sections 6 and 7).
+    try:
+        repo = find_repo(repo_arg)
+        plan = fill_plan(repo, run, load_schema(ANSWERS), load_rules(repo))
+    except InputError as exc:
+        print(_line(f"facts fill-plan: {exc}"), file=sys.stderr)
+        return 1 if isinstance(exc, FormRefused) else 2
+    if as_json:
+        # The true values, as ASCII JSON: no value can break the document.
+        _write_json(plan)
+        return 0
+    # The plan is a list of lines that is never joined and split again: each
+    # value stays in its one line, also a value with a line boundary.
+    for line in _plan_lines(plan):
+        _write_line(line)
+    return 0
+
+
+def _plan_lines(plan: dict[str, Any]) -> list[str]:
+    """Return the fill plan as text lines. Each value is in one line only.
+
+    The cover letter is in the lines that the approved text has when it is
+    split at LF only. `_write_line()` shows each other line boundary as "?".
+    """
+    lines = [f"Fill plan for {plan['run']}", "", "Files to upload:"]
+    lines += [
+        f"  {f['kind']}: {f['path']} (sha256 {f['sha256']})" for f in plan["files"]
+    ]
+    lines += ["", "Personal data (approved resume):"]
+    info: dict[str, Any] = plan["personal_info"]
+    lines += [f"  {key}: {one_line(value)}" for key, value in info.items()]
+    lines += ["", f"Answers ({ANSWERS_NOTE}):"]
+    lines += [
+        f"  {a['id']}: {one_line(a['question'])} -> {one_line(a['answer'])}"
+        for a in plan["answers"]
+    ]
+    lines += ["", "Empty answers (leave the field empty, tell the owner):"]
+    # Each id and question is from answers.yaml: not covered by the signature.
+    lines += [f"  {a['id']}: {one_line(a['question'])}" for a in plan["empty_answers"]]
+    lines += ["", "Rules:"] + [f"  - {rule}" for rule in plan["rules"]]
+    unsigned: dict[str, Any] = plan["not_signed"]
+    lines += ["", "NOT covered by the signature:", f"  {unsigned['note']}"]
+    lines += [f"  {key}: {one_line(unsigned[key])}" for key in ("company", "role")]
+    lines += [f"  apply_url: {one_line(unsigned['apply_url'])}"]
+    letter = plan["cover_letter"]
+    lines += ["", "Cover letter (approved):"]
+    lines += ["  (none)"] if letter is None else [f"  {x}" for x in letter.split("\n")]
+    return lines
+
+
+def _submitted(run: Path, repo_arg: Path | None, as_json: bool) -> int:
+    try:
+        repo = find_repo(repo_arg)
+        result = mark_submitted(repo, run, _today())
+    except InputError as exc:
+        print(_line(f"facts submitted: {exc}"), file=sys.stderr)
+        return 1 if isinstance(exc, FormRefused) else 2
+    if as_json:
+        data = {"schema_version": JSON_SCHEMA_VERSION, "command": "submitted", **result}
+        _write_json(data, indent=None)
+    else:
+        _write_line(
+            f"facts submitted: {run} has the status submitted ({result['submitted']})."
+        )
     return 0
 
 
@@ -768,6 +884,10 @@ def _status(repo_arg: Path | None, as_json: bool) -> int:
     return 1 if report["errors"] else 0
 
 
+# Each line boundary of `str.splitlines()`, and the tab.
+NOT_IN_A_LINE = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029\t")
+
+
 def _encodable(text: str) -> str:
     """Return `text` with "?" for each character that stdout cannot encode.
 
@@ -784,11 +904,23 @@ def _encodable(text: str) -> str:
 def _line(text: str) -> str:
     """Return `text` as one line of visible characters for the terminal.
 
-    `safe()` keeps line ends and tabs. A line end or a tab would break the table
+    `safe()` keeps line ends and tabs. A line boundary (each character at
+    which `str.splitlines()` starts a new line) or a tab would break the table
     or start a false line, so it shows as "?" too. A character that stdout
     cannot encode shows as "?".
     """
-    return _encodable(safe(text).replace("\n", "?").replace("\t", "?"))
+    shown = safe(text)
+    return _encodable("".join("?" if c in NOT_IN_A_LINE else c for c in shown))
+
+
+def _write_line(text: str) -> None:
+    """Write `text` on stdout as exactly one line, with one write."""
+    sys.stdout.write(_line(text) + "\n")
+
+
+def _write_json(data: Any, indent: int | None = 2) -> None:
+    """Write `data` on stdout as one ASCII JSON document with the true values."""
+    sys.stdout.write(json.dumps(data, indent=indent, ensure_ascii=True) + "\n")
 
 
 def _cell(value: str | None) -> str:

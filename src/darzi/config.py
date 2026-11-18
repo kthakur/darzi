@@ -2,13 +2,17 @@
 
 This module reads only `<data root>/facts.toml`. It reads no environment
 variable. Each work item adds the section that it needs: `[owner]` (W-4),
-`[approval]` (W-5) and `[render]` (W-6).
+`[approval]` (W-5), `[render]` (W-6) and `[form]` (W-9).
 """
 
+import re
 import tomllib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from darzi.facts.repo import InputError
 from darzi.paths import is_file
@@ -71,12 +75,71 @@ class RenderSettings:
 
 
 @dataclass(frozen=True)
+class FormSettings:
+    """The `[form]` settings: the blocked host names, in the form of `host_name()`."""
+
+    blocked_hosts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
-    """The settings of one data root. `render` is None without `[render]`."""
+    """The settings of one data root.
+
+    `render` is None without `[render]`, and `form` is None without `[form]`.
+    """
 
     owner_name: str = DEFAULT_OWNER
     approval: Approval = Approval()
     render: RenderSettings | None = None
+    form: FormSettings | None = None
+
+
+# One label of an ASCII host name (RFC 1123): letters, digits and hyphens.
+_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+# The dots that IDNA reads as a dot between labels.
+_DOTS = re.compile("[\u002e\u3002\uff0e\uff61]")
+MAX_HOST = 253
+
+
+def host_name(text: str) -> str | None:
+    """Return the host name `text` in one comparable ASCII form, or None.
+
+    The steps: Unicode NFKC, each IDNA dot as ".", small letters, one trailing
+    dot removed. An ASCII name (also an `xn--` name) stays as it is. A name
+    with a non-ASCII character goes to ASCII by the older IDNA rules (the
+    Python codec) and by the newer rules (httpx, the same test as the fetch
+    guard); when the two differ (for example the German sharp s or the Greek
+    final sigma), the name gives None. The result must be labels of letters,
+    digits and hyphens, separated by one dot, and the last label must start
+    with a letter: a browser reads a last label such as 1, 0x7f000001 or 0177
+    as part of an IP address. Each other text gives None.
+    """
+    value = _DOTS.sub(".", unicodedata.normalize("NFKC", text)).lower()
+    value = value.removesuffix(".")
+    ascii_name = value if value.isascii() else _idna(value)
+    if ascii_name is None:
+        return None
+    labels = ascii_name.split(".")
+    if len(ascii_name) > MAX_HOST or not all(_LABEL.fullmatch(x) for x in labels):
+        return None
+    if not labels[-1][0].isalpha():
+        return None
+    return ascii_name
+
+
+def _idna(value: str) -> str | None:
+    """Return the ASCII form of the non-ASCII name `value` when both IDNA rules agree.
+
+    Else return None.
+    """
+    if any(c in value for c in "/\\?#@:[]%") or any(c.isspace() for c in value):
+        return None
+    try:
+        older = value.encode("idna").decode("ascii").lower()
+        newer = httpx.URL(f"https://{value}/").raw_host.decode("ascii").lower()
+    except (httpx.InvalidURL, UnicodeError, ValueError):
+        return None
+    return older if older == newer else None
 
 
 def load_config(repo: Path) -> Config:
@@ -84,10 +147,11 @@ def load_config(repo: Path) -> Config:
 
     An absent `facts.toml`, `[owner]` section or `name` gives the name
     "the owner". An absent `[approval]` section or value gives None for that
-    value, and the same for `[render]`. Raises InputError when the file is not
-    valid TOML, when `[owner]`, `[approval]`, `[render]` or
-    `[render.resume_matcher]` is not a table, or when `name` or a value of
-    these sections is not a non-empty string.
+    value, and the same for `[render]` and `[form]`. Raises InputError when the
+    file is not valid TOML, when `[owner]`, `[approval]`, `[render]`,
+    `[render.resume_matcher]` or `[form]` is not a table, when `name` or a
+    value of these sections is not a non-empty string, or when `[form]` has no
+    `blocked_hosts` list of plain host names.
     """
     path = repo / FACTS_TOML
     try:
@@ -113,6 +177,7 @@ def load_config(repo: Path) -> Config:
         owner_name=_owner_name(path, data),
         approval=_approval(path, data),
         render=_render(path, data),
+        form=_form(path, data),
     )
 
 
@@ -182,3 +247,37 @@ def _render(path: Path, data: dict[str, Any]) -> RenderSettings | None:
     return RenderSettings(
         adapter=adapter, resume_matcher=ResumeMatcherSettings(**values)
     )
+
+
+def _form(path: Path, data: dict[str, Any]) -> FormSettings | None:
+    section: Any = data.get("form")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise InputError(f"{path}: form must be a table. Write it as [form].")
+    hosts: Any = section.get("blocked_hosts")
+    if not isinstance(hosts, list):
+        raise InputError(
+            f"{path}: [form] blocked_hosts must be a list of host names. "
+            "Write blocked_hosts = [] for no blocked host."
+        )
+    names: list[str] = []
+    for entry in hosts:  # pyright: ignore[reportUnknownVariableType]
+        name = _blocked_host(entry)
+        if name is None:
+            raise InputError(
+                f"{path}: [form] blocked_hosts has {entry!r}, which is not a plain "
+                'host name. Write only the name, for example "jobs.example.com".'
+            )
+        names.append(name)
+    return FormSettings(tuple(names))
+
+
+def _blocked_host(entry: Any) -> str | None:
+    """Return the host name of one blocked_hosts entry, or None when not plain."""
+    if not isinstance(entry, str) or entry != entry.strip():
+        return None
+    # No scheme, path, port, user, wildcard or space: only a name.
+    if any(c in entry for c in ":/\\@*?#[]%") or any(c.isspace() for c in entry):
+        return None
+    return host_name(entry)

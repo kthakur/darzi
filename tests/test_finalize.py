@@ -953,3 +953,33 @@ def test_clone_commit_gives_none(tmp_path: Path, head: str) -> None:
     _git(tmp_path, head)
     assert clone_commit(tmp_path) is None
     assert clone_commit(tmp_path / "absent") is None
+
+
+# --- The status is read again inside the lock (W-9) ---------------------------
+
+
+def test_a_run_that_became_submitted_before_the_lock(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_locked = finalize_module.locked
+
+    @contextlib.contextmanager
+    def submit_first(run: Path, error: type[InputError]) -> Generator[None]:
+        # Another process writes the status submitted between step 1 and the lock.
+        text = (run / "run.yaml").read_text(encoding="utf-8")
+        (run / "run.yaml").write_text(
+            text.replace("status: new", "status: submitted"), encoding="utf-8"
+        )
+        with real_locked(run, error):
+            yield
+
+    monkeypatch.setattr(finalize_module, "locked", submit_first)
+    before = _tree(run_dir)
+    with pytest.raises(Refused, match="submitted"):
+        _finalize(run_dir)
+    after = _tree(run_dir)
+    assert _status(run_dir) == "submitted"
+    assert {k: v for k, v in after.items() if k != "run.yaml"} == {
+        k: v for k, v in before.items() if k != "run.yaml"
+    }
+    assert not (run_dir / "manifest.json").exists()

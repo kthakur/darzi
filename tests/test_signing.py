@@ -22,6 +22,7 @@ from darzi.facts.check import load_run
 from darzi.facts.selection import is_approved, load_selection, selection_hash
 from darzi.runs import signing
 from darzi.runs.approve import run_is_approved
+from darzi.runs.runs import content_hash
 from darzi.runs.signing import (
     FINGERPRINT,
     NAME,
@@ -724,3 +725,70 @@ def test_src_has_no_shell_call_and_one_program() -> None:
     assert "shell=True" not in text
     assert "os.system" not in text and "Popen" not in text
     assert "shutil.which" not in text
+
+
+# --- The target name and the record must be those of target_path --------------
+
+
+def test_a_record_of_another_root_is_not_approved(root: Path, tmp_path: Path) -> None:
+    # A copy of the root has the same key list, so its record verifies.
+    other = tmp_path / "other"
+    shutil.copytree(root, other)
+    target = root / "selections" / "ux.yaml"
+    good = verify_approval(
+        root,
+        _settings(root),
+        "selection",
+        "ux",
+        _ux_record(root),
+        _ux_hash(root),
+        target_path=target,
+    )
+    assert good.approved
+    verdict = verify_approval(
+        root,
+        _settings(root),
+        "selection",
+        "ux",
+        _ux_record(other),
+        _ux_hash(root),
+        target_path=target,
+    )
+    _not(verdict, "is not the approval record of")
+
+
+def test_a_target_name_of_another_target_is_not_approved(root: Path) -> None:
+    other = root / "selections" / "corporate-tech.yaml"
+    verdict = verify_approval(
+        root,
+        _settings(root),
+        "selection",
+        "corporate-tech",
+        selection_record(other),
+        selection_hash(load_selection(other)),
+        target_path=root / "selections" / "ux.yaml",
+    )
+    _not(verdict, "is not the name of")
+
+
+def test_a_run_record_of_another_root_is_not_approved(tmp_path: Path) -> None:
+    root = signed_copy(tmp_path / "a")
+    run = root / "applications" / "2026-09-14-globex-ux-designer"
+    selection = root / "selections" / "ux.yaml"
+    assert main(["export", str(selection), "--run", str(run), "--repo", str(root)]) == 0
+    shutil.copy(run / "base.json", run / "tailored.json")
+    assert approve(root, run) == 0
+    other = tmp_path / "b"
+    shutil.copytree(root, other)
+    files = load_run(run)
+    assert run_is_approved(root, _settings(root), run, files).approved
+    verdict = verify_approval(
+        root,
+        _settings(root),
+        "run",
+        run.name,
+        other / "applications" / run.name / "approval.json",
+        content_hash(files.tailored, files.letter),
+        target_path=run,
+    )
+    _not(verdict, "is not the approval record of")
