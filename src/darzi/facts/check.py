@@ -144,6 +144,46 @@ NESTED_KEYS: tuple[tuple[str, str, tuple[str, ...], bool], ...] = (
     ("not_working_periods", "periods", ("from", "to", "source"), True),
 )
 MAP_ENTRY_KEYS = ("section", "rm_id")
+
+
+def _texts(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)  # pyright: ignore[reportUnknownVariableType]
+
+
+def _text_map(value: Any) -> bool:
+    return isinstance(value, dict) and all(isinstance(v, str) for v in value.values())  # pyright: ignore[reportUnknownVariableType]
+
+
+@dataclass(frozen=True)
+class Kind:
+    """The kind of a rules.yaml value: its name, the fix and its test."""
+
+    name: str
+    fix: str
+    test: Callable[[Any], bool]
+
+
+# The kind of each key of the key test, as rules.schema.json gives it.
+KINDS: dict[str, Kind] = {
+    "id": Kind("text", "text", lambda v: isinstance(v, str)),
+    "severity": Kind("text", "text", lambda v: isinstance(v, str)),
+    "terms": Kind("a list of text", "a list", _texts),
+    "regex": Kind(
+        "a list of text or a mapping of text",
+        "a list or a mapping",
+        lambda v: _texts(v) or _text_map(v),
+    ),
+    "required_any": Kind(
+        "a mapping of lists of text",
+        "a mapping",
+        lambda v: isinstance(v, dict) and all(_texts(x) for x in v.values()),  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    ),
+    "periods": Kind(
+        "a list of mappings",
+        "a list",
+        lambda v: isinstance(v, list) and all(isinstance(x, dict) for x in v),  # pyright: ignore[reportUnknownVariableType]
+    ),
+}
 RULES_FIX = "Add it to rules.yaml."
 MAP_FIX = "Run facts export again."
 
@@ -177,12 +217,14 @@ def _require_rule_keys(
     """Raise InputError when rules.yaml lacks a key of `table` or `nested`.
 
     Each entry of `table` must be a mapping with the keys `common` and its own
-    keys. The message names the key and the fix.
+    keys. A key of KINDS must have the kind that rules.schema.json gives it.
+    The message names the key and the fix.
     """
+    with_keys = f" with {' and '.join(common)}" if common else ""
     if not isinstance(rules, dict):
         raise InputError(
             "rules.yaml has no rule entries. Add the rule entries to rules.yaml, "
-            "each one a mapping with id and severity."
+            f"each one a mapping{with_keys}."
         )
     for name, keys in table.items():
         if name not in rules:
@@ -190,12 +232,18 @@ def _require_rule_keys(
         entry = rules[name]
         if not isinstance(entry, dict):
             raise InputError(
-                f"rules.yaml: {name} is not a mapping. Write it as a mapping "
-                "with id and severity."
+                f"rules.yaml: {name} is not a mapping. Write it as a mapping"
+                f"{with_keys}."
             )
         for key in (*common, *keys):
             if key not in entry:
                 raise InputError(f"rules.yaml: {name} has no key {key}. {RULES_FIX}")
+            if key in KINDS and not KINDS[key].test(entry[key]):
+                kind = KINDS[key]
+                raise InputError(
+                    f"rules.yaml: {name}.{key} is not {kind.name}. Write it as "
+                    f"{kind.fix}, then run the command again."
+                )
     for name, value, keys, is_list in nested:
         found: Any = rules[name][value]
         items: list[tuple[str, Any]] = (

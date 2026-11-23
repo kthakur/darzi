@@ -162,12 +162,13 @@ def settings_problem(repo: Path, settings: Approval) -> str:
             return f"facts.toml has no [approval] {key}"
     if not NAME.fullmatch(settings.signer or ""):
         return (
-            "the [approval] signer in facts.toml has characters that are not permitted"
+            "the [approval] signer in facts.toml is not permitted: it must start "
+            "with a letter or a digit, then have only letters, digits and . _ @ + -"
         )
     if not NAME.fullmatch(settings.namespace or ""):
         return (
-            "the [approval] namespace in facts.toml has characters that are "
-            "not permitted"
+            "the [approval] namespace in facts.toml is not permitted: it must start "
+            "with a letter or a digit, then have only letters, digits and . _ @ + -"
         )
     if allowed_signers_path(repo, settings) is None:
         return (

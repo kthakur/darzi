@@ -30,11 +30,11 @@ def privacy_scan() -> ModuleType:
 
 
 def built_commands() -> set[str]:
-    """Return each `facts` command that the parser has and that is built."""
+    """Return each `facts` command that the parser has."""
     parser = cli.build_parser()
     [sub] = [
         a
         for a in parser._actions  # pyright: ignore[reportPrivateUsage]
         if isinstance(a, argparse._SubParsersAction)  # pyright: ignore[reportPrivateUsage]
     ]
-    return set(sub.choices) - set(cli.PLANNED)
+    return set(sub.choices)

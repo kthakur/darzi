@@ -905,7 +905,10 @@ def _check_word_settings(settings: dict[str, Any]) -> None:
         if key not in settings:
             continue
         try:
-            int(settings[key])
+            number = int(settings[key])
+            # A level must be a key of the tables in word.py (FONT_SIZE_PX).
+            if key in DEFAULT_LEVELS and number not in FONT_SIZE_PX:
+                raise ValueError(key)
         except (TypeError, ValueError):
             raise InputError(
                 f"{RUN_YAML}: the print_settings value of {key} is not a whole "

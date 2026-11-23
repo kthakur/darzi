@@ -86,11 +86,7 @@ def test_a_folder_that_cannot_be_read_raises(
 
 
 def test_src_uses_the_helpers() -> None:
-    """Each file test in src/darzi uses darzi.paths, not a Path method.
-
-    The one exception is new_run() in runs/runs.py, which issue 13 does not
-    change.
-    """
+    """Each file test in src/darzi uses darzi.paths, not a Path method."""
     call = re.compile(r"\.(is_file|is_dir|exists)\(\)")
     found = [
         f"{py.relative_to(SRC)}:{number}: {line.strip()}"
@@ -99,4 +95,4 @@ def test_src_uses_the_helpers() -> None:
         for number, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1)
         if call.search(line)
     ]
-    assert found == ["runs/runs.py:67: if run.exists():"]
+    assert found == []

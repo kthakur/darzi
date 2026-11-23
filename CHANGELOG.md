@@ -1,9 +1,32 @@
 # Changes
 
+## Unreleased
+
+Small corrections. No check rule, hash or file format changes.
+
+- `facts finalize` and `facts render RUN --draft` refuse a `print_settings`
+  level outside 1 to 5 with one short line and exit code 2, before they build
+  a file. Before, `finalize` stopped with a traceback.
+- `facts check`, `export`, `public` and `query` refuse a `rules.yaml` value of
+  the wrong kind (for example `terms: null`) with a short line that names the
+  key and the expected kind. Before, they stopped with a traceback.
+- The `facts` commands no longer print a warning about SOCKS support on stderr.
+- The run lock message names `fit`, which also takes the lock.
+- The `approve` message for a bad signer or namespace in `facts.toml` says
+  which characters are permitted.
+- A named pipe at the path of a lock file is refused at once. Before, the
+  command waited with no end.
+- A job page with a charset that cannot decode the page (for example
+  `punycode`) is read as UTF-8.
+- The hint for a `rules.yaml` entry that is not a mapping no longer names
+  `id` and `severity` in commands that do not read them.
+- Small clean-ups in the code and in the apply workflow text.
+
 ## 0.2.0 (18 November 2026)
 
 The first release. It has the full apply workflow, from a job post to the
-final files. It runs on macOS and Linux, with Python 3.12 to 3.14.
+final files. It runs on macOS and Linux, with Python 3.12 or later; tested on 3.12 and
+3.14.
 
 ### Facts
 

@@ -211,6 +211,25 @@ def test_a_codec_that_is_not_a_text_encoding_is_read_as_utf8(charset: str) -> No
     assert "Product Designer" in result.text
 
 
+@pytest.mark.parametrize("charset", ["punycode", "PUNYCODE"])
+def test_a_codec_that_fails_on_the_page_is_read_as_utf8(charset: str) -> None:
+    # punycode decodes one ASCII byte, but not this page: a non-ASCII byte
+    # comes after the last "-".
+    extra = b"<p>Sign-up forms \xc3\xa9.</p></article>"
+    body = JOB_HTML.encode().replace(b"</article>", extra, 1)
+    with pytest.raises(UnicodeDecodeError):
+        body.decode(charset, errors="replace")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": f"text/html; charset={charset}"}, content=body
+        )
+
+    result = _fetch(URL, respond)
+    assert isinstance(result, FetchOk), result
+    assert "Product Designer" in result.text
+
+
 # Failures of the server or of the page
 
 

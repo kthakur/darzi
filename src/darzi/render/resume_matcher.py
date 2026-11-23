@@ -47,6 +47,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
@@ -67,6 +68,7 @@ SCRATCH_TITLE = "darzi scratch"
 # The lock file name is LOCK_PREFIX + a hash of the data folder + LOCK_SUFFIX.
 LOCK_PREFIX = "darzi-render-"
 LOCK_SUFFIX = ".lock"
+LOCK_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 # The keys of [render.resume_matcher] that a render needs.
 REQUIRED = ("path", "data_dir", "frontend_url", "backend_url")
@@ -332,13 +334,20 @@ class ResumeMatcher:
         try:
             lock_file = lock_path(data_dir)
             # O_NOFOLLOW: a symbolic link in the temporary folder is refused.
-            lock = os.open(lock_file, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            # O_NONBLOCK: a named pipe with no reader is refused at once, not
+            # waited for. It has no effect on a regular file.
+            lock = os.open(lock_file, LOCK_FLAGS, 0o600)
         except (OSError, RuntimeError) as exc:
             raise RenderError(
                 f"cannot open the lock file for the data folder {data_dir}: "
                 f"{exc}. Check the temporary folder."
             ) from exc
         try:
+            if not stat.S_ISREG(os.fstat(lock).st_mode):
+                raise RenderError(
+                    f"the lock file for the data folder {data_dir} is not a "
+                    "regular file. Check the temporary folder."
+                )
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
