@@ -224,3 +224,31 @@ def test_the_synthetic_rules_and_300_variations_pass_the_key_test() -> None:
         require_keys(variation, NO_MAP)
         require_public_keys(variation)
         require_selection_keys(variation)
+
+
+LIST_REGEX = (
+    "rules.yaml: privacy_patterns.regex is a list. Write it as a mapping of name "
+    "to pattern, then run the command again."
+)
+
+
+def test_a_list_of_privacy_patterns_for_the_public_copy() -> None:
+    # The schema permits a list, but privacy_findings() reads a mapping.
+    with pytest.raises(InputError) as caught:
+        require_public_keys(_with("privacy_patterns", "regex", ["a+"]))
+    assert str(caught.value) == LIST_REGEX
+
+
+@pytest.mark.parametrize("command", ["export", "public", "query"])
+def test_the_commands_refuse_a_list_of_privacy_patterns(
+    root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    _write_rules(root, "privacy_patterns", "regex", ["[0-9]{3}-[0-9]{2}"])
+    assert _run(command, root, tmp_path) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"facts {command}: {LIST_REGEX}\n"
+    assert not (tmp_path / "run").exists()

@@ -274,6 +274,13 @@ def require_public_keys(rules: Any) -> None:
     a missing key stops the command with a traceback.
     """
     _require_rule_keys(rules, PUBLIC_KEYS, PUBLIC_NESTED_KEYS)
+    # privacy_findings() reads privacy_patterns.regex as a mapping of name to
+    # pattern, as the source does. The schema and KINDS also permit a list.
+    if isinstance(rules["privacy_patterns"]["regex"], list):
+        raise InputError(
+            "rules.yaml: privacy_patterns.regex is a list. Write it as a mapping "
+            "of name to pattern, then run the command again."
+        )
 
 
 def require_keys(rules: Any, the_map: dict[str, Any]) -> None:

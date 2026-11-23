@@ -286,8 +286,18 @@ def test_draft_sends_the_print_settings_of_the_run(
     shutil.rmtree(fake.calls[0][2].parent)
 
 
+LEVELS = "Write one of 1, 2, 3, 4, 5."
+MILLIMETRES = "Write a whole number of millimetres, such as 10."
+
+
 @pytest.mark.parametrize(
-    ("key", "value"), [("fontSize", "9"), ("lineHeight", "0"), ("marginTop", "x")]
+    ("key", "value", "found", "fix"),
+    [
+        ("fontSize", "9", "is 9", LEVELS),
+        ("lineHeight", "0", "is 0", LEVELS),
+        ("fontSize", "x", "is not a whole number", LEVELS),
+        ("marginTop", "x", "is not a whole number", MILLIMETRES),
+    ],
 )
 def test_draft_refuses_a_print_setting_before_the_render(
     tmp_path: Path,
@@ -296,6 +306,8 @@ def test_draft_refuses_a_print_setting_before_the_render(
     own_temp_folder: Path,
     key: str,
     value: str,
+    found: str,
+    fix: str,
 ) -> None:
     # The same test and the same message as facts finalize.
     root, run = _root(tmp_path)
@@ -307,9 +319,9 @@ def test_draft_refuses_a_print_setting_before_the_render(
     out, err = capsys.readouterr()
     assert out == ""
     assert len(err.strip().splitlines()) == 1, err
-    assert err.startswith(
-        f"facts render: run.yaml: the print_settings value of {key} is not a whole "
-        "number. Write "
+    assert err == (
+        f"facts render: run.yaml: the print_settings value of {key} {found}. "
+        f"{fix} Correct run.yaml, then run the command again.\n"
     )
     assert fake.calls == []
     assert list(own_temp_folder.iterdir()) == []
