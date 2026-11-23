@@ -7,10 +7,11 @@ conftest.py fails a test that opens a socket or looks up a name.
 
 from __future__ import annotations
 
+import codecs
 import datetime as dt
 import ipaddress
 import socket
-from collections.abc import Callable
+from collections.abc import Buffer, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -211,14 +212,70 @@ def test_a_codec_that_is_not_a_text_encoding_is_read_as_utf8(charset: str) -> No
     assert "Product Designer" in result.text
 
 
-@pytest.mark.parametrize("charset", ["punycode", "PUNYCODE"])
-def test_a_codec_that_fails_on_the_page_is_read_as_utf8(charset: str) -> None:
-    # punycode decodes one ASCII byte, but not this page: a non-ASCII byte
-    # comes after the last "-".
-    extra = b"<p>Sign-up forms \xc3\xa9.</p></article>"
-    body = JOB_HTML.encode().replace(b"</article>", extra, 1)
+_FAILING_CODEC = "darzi_test_fails_on_page"
+
+
+def _one_byte_decode(data: Buffer, errors: str = "strict") -> tuple[str, int]:
+    """Decode one ASCII byte; raise on more, as a codec that fails on a page."""
+    raw = bytes(data)
+    if len(raw) > 1:
+        raise UnicodeDecodeError(_FAILING_CODEC, raw, 0, len(raw), "test codec")
+    return raw.decode("ascii", errors), len(raw)
+
+
+def _one_byte_encode(text: str, errors: str = "strict") -> tuple[bytes, int]:
+    """Encode as ASCII; the fetch does not use this."""
+    return text.encode("ascii", errors), len(text)
+
+
+def _search_failing_codec(name: str) -> codecs.CodecInfo | None:
+    """Find the test codec by its name, and no other codec."""
+    if name != _FAILING_CODEC:
+        return None
+    return codecs.CodecInfo(_one_byte_encode, _one_byte_decode, name=_FAILING_CODEC)
+
+
+@pytest.fixture
+def failing_codec() -> Iterator[str]:
+    """Register a codec that passes the one-byte probe but fails on the page."""
+    codecs.register(_search_failing_codec)
+    try:
+        yield _FAILING_CODEC
+    finally:
+        codecs.unregister(_search_failing_codec)
+
+
+_PAGE_WITH_NON_ASCII = JOB_HTML.encode().replace(
+    b"</article>", b"<p>Sign-up forms \xc3\xa9.</p></article>", 1
+)
+
+
+@pytest.mark.parametrize("upper", [False, True])
+def test_a_codec_that_fails_on_the_page_is_read_as_utf8(
+    failing_codec: str, upper: bool
+) -> None:
+    charset = failing_codec.upper() if upper else failing_codec
+    body = _PAGE_WITH_NON_ASCII
+    assert b"a".decode(charset, errors="replace") == "a"
     with pytest.raises(UnicodeDecodeError):
         body.decode(charset, errors="replace")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": f"text/html; charset={charset}"}, content=body
+        )
+
+    result = _fetch(URL, respond)
+    assert isinstance(result, FetchOk), result
+    assert "Product Designer" in result.text
+    assert "Sign-up forms \N{LATIN SMALL LETTER E WITH ACUTE}." in result.text
+
+
+@pytest.mark.parametrize("charset", ["punycode", "PUNYCODE"])
+def test_a_punycode_charset_gives_a_readable_page(charset: str) -> None:
+    # Whether punycode fails on this page depends on the Python version.
+    # Either way, the fetch gives the page text.
+    body = _PAGE_WITH_NON_ASCII
 
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
