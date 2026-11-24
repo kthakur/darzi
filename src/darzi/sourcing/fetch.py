@@ -30,19 +30,24 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
-from urllib3.exceptions import DependencyWarning
-
-# trafilatura imports urllib3, which warns on stderr that PySocks is not
-# installed. darzi uses no SOCKS proxy, so ignore that one warning here only.
-# catch_warnings() restores the warning filters after the import.
-with warnings.catch_warnings():
-    warnings.filterwarnings(
-        "ignore", message="SOCKS support in urllib3", category=DependencyWarning
-    )
-    import trafilatura
 
 from darzi import __version__
 from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason, FetchResult
+
+# trafilatura imports urllib3, which warns on stderr that PySocks is not
+# installed. darzi uses no SOCKS proxy, so ignore that one warning. The filter
+# matches the fixed text of that message up to its link, so no other warning is
+# hidden. The filters that trafilatura and urllib3 set at import stay in place.
+SOCKS_WARNING_MESSAGE = (
+    r"SOCKS support in urllib3 requires the installation of optional "
+    r"dependencies: specifically, PySocks\.  For more information, see "
+)
+warnings.filterwarnings(
+    "ignore",
+    message=SOCKS_WARNING_MESSAGE,
+    category=Warning,
+)
+import trafilatura  # noqa: E402
 
 USER_AGENT = f"darzi/{__version__}"
 # 5 MiB: large for an HTML page, but it limits the memory.

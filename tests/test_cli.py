@@ -104,6 +104,43 @@ def test_a_new_process_prints_nothing_on_stderr(args: list[str]) -> None:
     assert done.stderr == ""
 
 
+def test_the_import_adds_only_the_socks_filter() -> None:
+    # A new process: the filters after `import darzi.cli`. The filter of
+    # trafilatura for InsecureRequestWarning stays, and the SOCKS filter is
+    # there. The SOCKS filter does not match a different urllib3 warning.
+    code = (
+        "import warnings\n"
+        "import darzi.cli\n"
+        "from darzi.sourcing.fetch import SOCKS_WARNING_MESSAGE\n"
+        "from urllib3.exceptions import DependencyWarning, InsecureRequestWarning\n"
+        "kept = [f for f in warnings.filters\n"
+        "        if f[0] == 'ignore' and f[2] is InsecureRequestWarning]\n"
+        "socks = [f for f in warnings.filters if f[0] == 'ignore' and f[1]\n"
+        "         and f[1].pattern == SOCKS_WARNING_MESSAGE and f[2] is Warning]\n"
+        "assert len(kept) == 1, warnings.filters\n"
+        "assert len(socks) == 1, warnings.filters\n"
+        "with warnings.catch_warnings(record=True) as seen:\n"
+        "    warnings.simplefilter('always')\n"
+        "    warnings.filters[:0] = socks\n"
+        "    warnings.warn('SOCKS support in urllib3 requires the installation of '\n"
+        "        'optional dependencies: specifically, PySocks.  For more '\n"
+        "        'information, see https://example.com', DependencyWarning)\n"
+        "    warnings.warn('A different warning.', DependencyWarning)\n"
+        "assert [str(w.message) for w in seen] == ['A different warning.'], seen\n"
+        "print('ok')\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "ok\n"
+    assert done.stderr == ""
+
+
 # facts validate
 
 

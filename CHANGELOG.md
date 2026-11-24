@@ -7,6 +7,9 @@ Small corrections. No check rule, hash or file format changes.
 - `facts finalize` and `facts render RUN --draft` refuse a `print_settings`
   level outside 1 to 5 with one short line and exit code 2, before they build
   a file. Before, `finalize` stopped with a traceback.
+- `facts render RUN --draft` now uses the whole print-settings check of
+  `finalize`: it also refuses a margin that is not a whole number, with the
+  same message.
 - `facts check`, `export`, `public` and `query` refuse a `rules.yaml` value of
   the wrong kind (for example `terms: null`) with a short line that names the
   key and the expected kind. Before, they stopped with a traceback.
