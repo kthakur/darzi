@@ -284,3 +284,59 @@ def test_draft_sends_the_print_settings_of_the_run(
     capsys.readouterr()
     assert fake.calls[0][1] == {"pageSize": "LETTER", "compactMode": True}
     shutil.rmtree(fake.calls[0][2].parent)
+
+
+LEVELS = "Write one of 1, 2, 3, 4, 5."
+MILLIMETRES = "Write a whole number of millimetres, such as 10."
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "found", "fix"),
+    [
+        ("fontSize", "9", "is 9", LEVELS),
+        ("lineHeight", "0", "is 0", LEVELS),
+        ("fontSize", "x", "is not a whole number", LEVELS),
+        ("marginTop", "x", "is not a whole number", MILLIMETRES),
+    ],
+)
+def test_draft_refuses_a_print_setting_before_the_render(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    own_temp_folder: Path,
+    key: str,
+    value: str,
+    found: str,
+    fix: str,
+) -> None:
+    # The same test and the same message as facts finalize.
+    root, run = _root(tmp_path)
+    with (run / "run.yaml").open("a", encoding="utf-8") as f:
+        f.write(f"print_settings:\n  {key}: {value}\n")
+    fake = FakeRenderer()
+    _use(monkeypatch, fake)
+    assert main(["render", str(run), "--draft", "--repo", str(root)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert len(err.strip().splitlines()) == 1, err
+    assert err == (
+        f"facts render: run.yaml: the print_settings value of {key} {found}. "
+        f"{fix} Correct run.yaml, then run the command again.\n"
+    )
+    assert fake.calls == []
+    assert list(own_temp_folder.iterdir()) == []
+
+
+def test_draft_accepts_each_level_from_1_to_5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, run = _root(tmp_path)
+    with (run / "run.yaml").open("a", encoding="utf-8") as f:
+        f.write(
+            "print_settings:\n  fontSize: 1\n  lineHeight: '5'\n  itemSpacing: 2.0\n"
+        )
+    fake = FakeRenderer()
+    _use(monkeypatch, fake)
+    assert main(["render", str(run), "--draft", "--repo", str(root)]) == 0
+    capsys.readouterr()
+    shutil.rmtree(fake.calls[0][2].parent)

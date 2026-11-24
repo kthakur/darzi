@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from darzi.facts.repo import InputError, read_yaml
-from darzi.paths import is_file, write_atomic
+from darzi.paths import exists, is_file, write_atomic
 
 APPLICATIONS = "applications"
 JOB = "job.md"
@@ -64,7 +64,7 @@ def new_run(
     if not job_text.strip():
         raise InputError("The job post is empty. Paste the full job post.")
     run = repo / APPLICATIONS / run_name(company, role, day)
-    if run.exists():
+    if exists(run):
         raise InputError(f"{run} already exists. Use it, or choose another role name.")
     run.mkdir(parents=True)
     (run / JOB).write_text(job_text.rstrip() + "\n", encoding="utf-8")

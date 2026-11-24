@@ -65,6 +65,7 @@ from darzi.runs.approve import (
 from darzi.runs.finalize import (
     Refused,
     RoundTripFailed,
+    _check_word_settings,  # pyright: ignore[reportPrivateUsage]
     finalize,
     finalize_handover,
 )
@@ -97,9 +98,6 @@ from darzi.workflows import NAMES as WORKFLOWS
 from darzi.workflows import load_workflow
 
 JSON_SCHEMA_VERSION = 1
-
-# Command -> the work item that builds it (docs/SPEC.md section 11).
-PLANNED: dict[str, str] = {}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -217,8 +215,6 @@ def build_parser() -> argparse.ArgumentParser:
         "workflow", parents=[common], help="print an agent workflow, for example apply"
     )
     workflow_cmd.add_argument("name", help=f"one of: {', '.join(WORKFLOWS)}")
-    for name, item in PLANNED.items():
-        sub.add_parser(name, parents=[common], help=f"not built yet ({item})")
     return parser
 
 
@@ -264,10 +260,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _doctor(args.repo, args.offline, args.json)
     if command == "workflow":
         return _workflow(args.name, args.json)
-    print(
-        f"facts {command}: not built yet. It comes in work item {PLANNED[command]}.",
-        file=sys.stderr,
-    )
+    # argparse stops an unknown command before this line.
+    print(f"facts {command}: unknown command. Run facts --help.", file=sys.stderr)
     return 2
 
 
@@ -402,6 +396,8 @@ def _render(run: Path, repo_arg: Path | None, draft: bool, as_json: bool) -> int
         repo = find_repo(repo_arg)
         resume = load_run(run).tailored
         settings = print_settings(run)
+        # The same test of the print settings as finalize, before the render.
+        _check_word_settings(settings)
         renderer = make_renderer(repo)
     except InputError as exc:
         print(_line(f"facts render: {exc}"), file=sys.stderr)

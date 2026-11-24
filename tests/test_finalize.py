@@ -42,6 +42,7 @@ from darzi.runs.finalize import (
     Finalized,
     Refused,
     RoundTripFailed,
+    _check_word_settings,  # pyright: ignore[reportPrivateUsage]
     finalize,
     lock_path,
 )
@@ -1051,6 +1052,10 @@ def test_a_print_setting_that_is_not_a_whole_number(
     assert len(err.strip().splitlines()) == 1, err
     assert "the print_settings value of marginTop is not a whole number" in err
     assert "a whole number of millimetres" in err
+    assert err.endswith(
+        "Write a whole number of millimetres, such as 10. "
+        "Correct run.yaml, then run the command again.\n"
+    )
     assert "tailored.json" not in err and "Word file" not in err
     assert _tree(run.parents[1]) == before
     assert not (run / "manifest.json").exists()
@@ -1076,3 +1081,49 @@ def test_a_value_error_without_a_bad_character_is_not_a_refusal(
     _, err = capsys.readouterr()
     assert "tailored.json" not in err and "cover_letter.md" not in err
     assert not (run_dir / "manifest.json").exists()
+
+
+LEVEL_FIX = "Write one of 1, 2, 3, 4, 5. Correct run.yaml, then run the command again."
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "found"),
+    [
+        ("fontSize", "9", "is 9"),
+        ("lineHeight", "0", "is 0"),
+        ("itemSpacing", "-1", "is -1"),
+        ("fontSize", "6", "is 6"),
+        ("fontSize", "x", "is not a whole number"),
+    ],
+)
+def test_a_level_outside_1_to_5_is_refused_before_the_build(
+    tmp_path: Path,
+    fake_tools: PdfCli,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+    value: str,
+    found: str,
+) -> None:
+    run = _make_run(tmp_path)
+    (run / "run.yaml").write_text(RUN_YAML + f"  {key}: {value}\n", encoding="utf-8")
+    assert approve(run.parents[1], run) == 0
+    capsys.readouterr()
+    before = _tree(run.parents[1])
+    assert _cli(run) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1, err
+    assert err == (
+        f"facts finalize: run.yaml: the print_settings value of {key} {found}. "
+        f"{LEVEL_FIX}\n"
+    )
+    # Nothing is built: Resume Matcher got no call, and out/ has no file.
+    assert fake_tools.calls == []
+    assert _tree(run.parents[1]) == before
+    assert not (run / "out").exists()
+
+
+@pytest.mark.parametrize("value", ["1", "5", "'2'", "2.0", "true"])
+def test_a_level_that_works_today_still_works(value: str) -> None:
+    _check_word_settings({"fontSize": yaml.safe_load(value)})

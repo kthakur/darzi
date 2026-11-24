@@ -1,16 +1,20 @@
-"""The `facts` command: help, version, planned commands and `facts validate`."""
+"""The `facts` command: help, version, the command list and `facts validate`."""
 
+import argparse
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from darzi import __version__
-from darzi.cli import PLANNED, main
+from darzi import __version__, cli
+from darzi.cli import main
 
 from .conftest import DATA
+from .docs_text import built_commands
 from .signing_root import signed_copy
 
 # Each command of docs/SPEC.md section 6, by the work item that builds it.
@@ -46,37 +50,31 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert __version__ in capsys.readouterr().out
 
 
-def test_each_spec_command_is_built_or_planned() -> None:
-    built = {
-        "validate",
-        "public",
-        "query",
-        "export",
-        "check",
-        "new-run",
-        "fit",
-        "status",
-        "approve",
-        "render",
-        "finalize",
-        "answers",
-        "fill-plan",
-        "submitted",
-        "doctor",
-        "workflow",
-    }
-    assert built | set(PLANNED) == SPEC_COMMANDS
-    assert built.isdisjoint(PLANNED)
+def test_the_built_commands_are_the_commands_of_the_spec() -> None:
+    assert built_commands() == SPEC_COMMANDS
 
 
-@pytest.mark.parametrize("command", sorted(PLANNED))
-def test_planned_command_says_not_built(
-    command: str, capsys: pytest.CaptureFixture[str]
+def test_a_parsed_command_with_no_handler_is_refused(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main([command]) == 2
-    err = capsys.readouterr().err
-    assert "not built yet" in err
-    assert f"work item {PLANNED[command]}." in err
+    # argparse refuses an unknown command, so give the parser one more command.
+    real = cli.build_parser
+
+    def with_extra() -> argparse.ArgumentParser:
+        parser = real()
+        [sub] = [
+            a
+            for a in parser._actions  # pyright: ignore[reportPrivateUsage]
+            if isinstance(a, argparse._SubParsersAction)  # pyright: ignore[reportPrivateUsage]
+        ]
+        sub.add_parser("extra")  # pyright: ignore[reportUnknownMemberType]
+        return parser
+
+    monkeypatch.setattr(cli, "build_parser", with_extra)
+    assert main(["extra"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "facts extra: unknown command. Run facts --help.\n"
 
 
 @pytest.mark.parametrize("command", ["submit", "rm", "next", "suggest"])
@@ -84,6 +82,63 @@ def test_unknown_command_is_refused(command: str) -> None:
     with pytest.raises(SystemExit) as exc:
         main([command])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--help"], ["--version"], ["status", "--repo", str(DATA)]],
+    ids=["help", "version", "status"],
+)
+def test_a_new_process_prints_nothing_on_stderr(args: list[str]) -> None:
+    # A new process imports each module again, so a warning at import shows.
+    code = "import sys; from darzi.cli import main; sys.exit(main(sys.argv[1:]))"
+    done = subprocess.run(
+        [sys.executable, "-c", code, *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout
+    assert done.stderr == ""
+
+
+def test_the_import_adds_only_the_socks_filter() -> None:
+    # A new process: the filters after `import darzi.cli`. The filter of
+    # trafilatura for InsecureRequestWarning stays, and the SOCKS filter is
+    # there. The SOCKS filter does not match a different urllib3 warning.
+    code = (
+        "import warnings\n"
+        "import darzi.cli\n"
+        "from darzi.sourcing.fetch import SOCKS_WARNING_MESSAGE\n"
+        "from urllib3.exceptions import DependencyWarning, InsecureRequestWarning\n"
+        "kept = [f for f in warnings.filters\n"
+        "        if f[0] == 'ignore' and f[2] is InsecureRequestWarning]\n"
+        "socks = [f for f in warnings.filters if f[0] == 'ignore' and f[1]\n"
+        "         and f[1].pattern == SOCKS_WARNING_MESSAGE and f[2] is Warning]\n"
+        "assert len(kept) == 1, warnings.filters\n"
+        "assert len(socks) == 1, warnings.filters\n"
+        "with warnings.catch_warnings(record=True) as seen:\n"
+        "    warnings.simplefilter('always')\n"
+        "    warnings.filters[:0] = socks\n"
+        "    warnings.warn('SOCKS support in urllib3 requires the installation of '\n"
+        "        'optional dependencies: specifically, PySocks.  For more '\n"
+        "        'information, see https://example.com', DependencyWarning)\n"
+        "    warnings.warn('A different warning.', DependencyWarning)\n"
+        "assert [str(w.message) for w in seen] == ['A different warning.'], seen\n"
+        "print('ok')\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "ok\n"
+    assert done.stderr == ""
 
 
 # facts validate

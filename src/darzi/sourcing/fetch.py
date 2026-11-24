@@ -24,15 +24,30 @@ import codecs
 import ipaddress
 import re
 import socket
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
-import trafilatura
 
 from darzi import __version__
 from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason, FetchResult
+
+# trafilatura imports urllib3, which warns on stderr that PySocks is not
+# installed. darzi uses no SOCKS proxy, so ignore that one warning. The filter
+# matches the fixed text of that message up to its link, so no other warning is
+# hidden. The filters that trafilatura and urllib3 set at import stay in place.
+SOCKS_WARNING_MESSAGE = (
+    r"SOCKS support in urllib3 requires the installation of optional "
+    r"dependencies: specifically, PySocks\.  For more information, see "
+)
+warnings.filterwarnings(
+    "ignore",
+    message=SOCKS_WARNING_MESSAGE,
+    category=Warning,
+)
+import trafilatura  # noqa: E402
 
 USER_AGENT = f"darzi/{__version__}"
 # 5 MiB: large for an HTML page, but it limits the memory.
@@ -301,7 +316,12 @@ def _get(client: httpx.Client, target: httpx.URL, url: str, max_bytes: int) -> _
 def _page(body: bytes, response: httpx.Response, url: str) -> FetchResult:
     """Return the Markdown text of an HTML body, or EMPTY_CONTENT."""
     content_type = response.headers.get("content-type", "")
-    html = body.decode(_charset(content_type), errors="replace")
+    try:
+        html = body.decode(_charset(content_type), errors="replace")
+    except ValueError:
+        # A codec that decodes one byte but fails on the page (for example
+        # punycode) gives UTF-8, as _charset() states.
+        html = body.decode("utf-8", errors="replace")
     text = trafilatura.extract(
         html,
         output_format="markdown",

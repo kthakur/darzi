@@ -127,7 +127,7 @@ line says. Do not try to correct the set-up yourself.
    that the approval is done.
 
 10. **Finalize.** Run `facts finalize RUN`. It makes the files in `RUN/out/`
-   and writes `RUN/manifest.json`. If it refuses, stop and tell the owner.
+    and writes `RUN/manifest.json`. If it refuses, stop and tell the owner.
 
 11. **Fill the form.** Make sure that `RUN/run.yaml` has `apply_url`, the
     link of the employer's application form. `facts fill-plan` refuses a run

@@ -701,3 +701,27 @@ def test_cli_no_job_and_no_url_exit_2(
     assert exc.value.code == 2
     assert "one of the arguments --job --url is required" in capsys.readouterr().err
     assert not (root / APPLICATIONS).exists()
+
+
+@pytest.mark.parametrize("kind", ["absent", "folder", "file", "broken-link"])
+def test_new_run_for_each_kind_of_path(root: Path, tmp_path: Path, kind: str) -> None:
+    # new_run() uses darzi.paths.exists(): the same result as Path.exists() on
+    # Python 3.12. A broken link does not exist, so mkdir() then fails.
+    run = root / APPLICATIONS / run_name("Acme", "Designer", DAY)
+    run.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "folder":
+        run.mkdir()
+    elif kind == "file":
+        run.write_text("x\n", encoding="utf-8")
+    elif kind == "broken-link":
+        run.symlink_to(tmp_path / "no-such-folder")
+    if kind == "absent":
+        assert new_run(root, "Acme", "Designer", POST, DAY) == run
+        assert sorted(p.name for p in run.iterdir()) == [JOB, RUN_YAML]
+    elif kind == "broken-link":
+        with pytest.raises(FileExistsError):
+            new_run(root, "Acme", "Designer", POST, DAY)
+        assert not (tmp_path / "no-such-folder").exists()
+    else:
+        with pytest.raises(InputError, match="already exists"):
+            new_run(root, "Acme", "Designer", POST, DAY)

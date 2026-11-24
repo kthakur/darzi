@@ -272,7 +272,26 @@ def test_a_signer_or_namespace_that_starts_with_a_dash(
     # A value that starts with "-" could look like an option to ssh-keygen.
     _set_toml(root, old, new)
     assert "not permitted" in settings_problem(root, _settings(root))
-    _not(_selection(root), "has characters that are not permitted")
+    _not(_selection(root), "must start with a letter or a digit")
+
+
+PERMITTED = (
+    "must start with a letter or a digit, then have only letters, digits and . _ @ + -"
+)
+
+
+@pytest.mark.parametrize("value", ["-x", "a b"])
+@pytest.mark.parametrize(
+    ("key", "old"),
+    [("signer", 'signer = "owner"'), ("namespace", 'namespace = "darzi-approval"')],
+)
+def test_the_message_says_what_a_signer_or_namespace_may_hold(
+    root: Path, key: str, old: str, value: str
+) -> None:
+    _set_toml(root, old, f'{key} = "{value}"')
+    assert settings_problem(root, _settings(root)) == (
+        f"the [approval] {key} in facts.toml is not permitted: it {PERMITTED}"
+    )
 
 
 def test_the_synthetic_signer_and_namespace_are_permitted(root: Path) -> None:

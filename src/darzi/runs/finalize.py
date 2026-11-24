@@ -904,13 +904,20 @@ def _check_word_settings(settings: dict[str, Any]) -> None:
     for key, accepted in WORD_WHOLE_NUMBERS.items():
         if key not in settings:
             continue
+        again = f"Correct {RUN_YAML}, then run the command again."
         try:
-            int(settings[key])
+            number = int(settings[key])
         except (TypeError, ValueError):
             raise InputError(
                 f"{RUN_YAML}: the print_settings value of {key} is not a whole "
-                f"number. Write {accepted}, then finalize again."
+                f"number. Write {accepted}. {again}"
             ) from None
+        # A level must be a key of the tables in word.py (FONT_SIZE_PX).
+        if key in DEFAULT_LEVELS and number not in FONT_SIZE_PX:
+            raise InputError(
+                f"{RUN_YAML}: the print_settings value of {key} is {number}. "
+                f"Write {accepted}. {again}"
+            )
 
 
 def _xml_char(c: str) -> bool:

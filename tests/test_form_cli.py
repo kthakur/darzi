@@ -285,7 +285,7 @@ def test_a_held_lock(run_dir: Path, capsys: Capture) -> None:
     fd = os.open(lock_path(run_dir), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _refused(run_dir, capsys, "another finalize, fill-plan or submitted")
+        _refused(run_dir, capsys, "another finalize, fill-plan, fit or submitted")
     finally:
         os.close(fd)
 
