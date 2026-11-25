@@ -24,6 +24,11 @@ Small corrections. No check rule, hash or file format changes.
 - The hint for a `rules.yaml` entry that is not a mapping no longer names
   `id` and `severity` in commands that do not read them.
 - Small clean-ups in the code and in the apply workflow text.
+- The fetch of `new-run --url` looks up the host name one time at each hop and
+  connects only to an address that the guard tested.
+- A redirect to a URL that is not valid (for example a bad international host
+  name) now gives `invalid_url` and exit code 2. Before, it gave
+  `connection_failed` and exit code 1. No request goes to it.
 
 ## 0.2.0 (18 November 2026)
 

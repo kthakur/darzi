@@ -313,11 +313,11 @@ item must be there, in the approved order.
 - **The guard:** it refuses a URL that is not http or https, a URL with a
   user name or password, and each address that is not a public internet
   address. It follows at most 5 redirects and checks each one.
-- **Limit:** the host name is looked up again when the connection starts.
 - **No proxy:** the fetch ignores the proxy settings of the environment
   (`HTTPS_PROXY` and the others). It connects to the job site directly.
 - **Limit:** a login page can return text. Read `job.md`. If it is not the
   job post, paste the text.
+- **Limit:** a small compressed page can unpack to many megabytes in memory.
 
 ### The fit rating
 
