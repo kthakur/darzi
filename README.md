@@ -305,11 +305,10 @@ item must be there, in the approved order.
 
 ### `facts new-run --url`
 
-- **What one fetch sends:** one GET request with the User-Agent
-  `darzi/<version>`. No login and no data about you. No cookie from your
-  computer or your browser is sent. A cookie that the job site sets during
-  one fetch can go back to that site in a later redirect of the same fetch.
-  darzi keeps no cookie after the fetch.
+- **What one fetch sends:** one GET request with the User-Agent `darzi/<version>`.
+  No login and no data about you. No cookie from your computer or your browser is
+  sent. A cookie that the job site sets during one fetch can go back to that site in
+  a later redirect of the same fetch. darzi keeps no cookie after the fetch.
 - **The guard:** it refuses a URL that is not http or https, a URL with a
   user name or password, and each address that is not a public internet
   address. It follows at most 5 redirects and checks each one.
@@ -317,7 +316,8 @@ item must be there, in the approved order.
   (`HTTPS_PROXY` and the others). It connects to the job site directly.
 - **Limit:** a login page can return text. Read `job.md`. If it is not the
   job post, paste the text.
-- **Limit:** a small compressed page can unpack to many megabytes in memory.
+- **Limit:** a page can be at most 5 MiB, also after the fetch unpacks it. A page in a
+  compression other than gzip or deflate is refused. Then paste the text.
 
 ### The fit rating
 

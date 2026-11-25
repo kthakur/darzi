@@ -29,6 +29,16 @@ Small corrections. No check rule, hash or file format changes.
 - A redirect to a URL that is not valid (for example a bad international host
   name) now gives `invalid_url` and exit code 2. Before, it gave
   `connection_failed` and exit code 1. No request goes to it.
+- The fetch of `new-run --url` unpacks a compressed page itself, in small
+  steps, and stops at the 5 MiB size limit. Before, a small compressed page
+  could unpack to many megabytes in memory first. The limit also applies to
+  the bytes as they arrive.
+- The fetch now refuses three kinds of page with `connection_failed` and exit
+  code 1: a page in a compression that darzi does not read (for example `br`
+  or `zstd`), a page in two or more layers of compression, and a compressed
+  page that ends early. Before, darzi read the first two as text or unpacked
+  each layer with no limit, and it used the part of the third that arrived.
+  A page that the server marks `x-gzip` is now unpacked as gzip.
 
 ## 0.2.0 (18 November 2026)
 

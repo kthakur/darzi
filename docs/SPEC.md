@@ -208,7 +208,9 @@ request and follows at most 5 redirects; at each hop, it refuses a URL that is
 not http or https and each address that is not a public internet address.
 At each hop, the fetch looks up the host name one time and connects only to an
 address that the guard tested; the TLS check and the `Host` header use the host
-name.
+name. The page can be at most 5 MiB, both as it arrives and after the fetch
+unpacks it; the fetch accepts no compression or one layer of gzip or deflate,
+and refuses each other compression.
 
 | Command | Does | Source |
 |---|---|---|

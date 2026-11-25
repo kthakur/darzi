@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import codecs
 import datetime as dt
+import gzip
 import ipaddress
 import socket
 from collections.abc import Buffer, Callable, Iterator
@@ -97,7 +98,7 @@ def _fetch(
 
     def record_connect(request: httpx.Request) -> httpx.Response:
         connected.append(request.url.raw_host.decode("ascii"))
-        return responder(request)
+        return streamed(responder(request))
 
     result = fetch(
         url,
@@ -107,6 +108,24 @@ def _fetch(
     )
     _assert_same_hosts(result, resolved, connected)
     return result
+
+
+def streamed(response: httpx.Response) -> httpx.Response:
+    """Return `response` with a body that is not read yet, as a network gives it.
+
+    httpx reads a body that a test gives as bytes when it makes the response,
+    and the fetch reads the raw stream (`iter_raw`), which must not be read
+    yet. A body given as bytes has no Content-Encoding here, so its raw bytes
+    are its content. A streamed body is returned as it is.
+    """
+    if not response.is_stream_consumed:
+        return response
+    assert "content-encoding" not in response.headers
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        stream=httpx.ByteStream(response.content),
+    )
 
 
 def _assert_same_hosts(
@@ -184,6 +203,19 @@ def test_a_request_sends_only_the_default_headers_and_the_user_agent() -> None:
         "host",
         "user-agent",
     ]
+    # The full list of main before F-7: darzi sets Accept-Encoding itself now.
+    assert request.headers["accept-encoding"] == "gzip, deflate"
+    assert request.headers.multi_items() == MAIN_HEADERS
+
+
+# The headers of one request on main before F-7, in order.
+MAIN_HEADERS = [
+    ("host", "jobs.example.com"),
+    ("accept", "*/*"),
+    ("accept-encoding", "gzip, deflate"),
+    ("connection", "keep-alive"),
+    ("user-agent", USER_AGENT),
+]
 
 
 def test_an_unknown_charset_is_read_as_utf8() -> None:
@@ -640,7 +672,9 @@ def test_the_system_resolver_is_the_default(no_network: list[str]) -> None:
     # stops it with an AssertionError, so the fetch makes no network call.
     # fetch() never raises: its last catch makes the error a typed failure.
     calls: list[str] = []
-    result = fetch(URL, transport=httpx.MockTransport(_recording(calls)))
+    result = fetch(
+        URL, transport=httpx.MockTransport(lambda r: streamed(_recording(calls)(r)))
+    )
     failure = _failed(result, FetchReason.CONNECTION_FAILED)
     assert "AssertionError" in failure.detail
     assert no_network == ["getaddrinfo"]
@@ -771,6 +805,41 @@ def test_cli_time_out_exit_1(
     _patch_fetch(monkeypatch, slow)
     err = _failed_cli(root, URL, 1, capsys)
     assert "(timeout)" in err and err.endswith(PASTE + "\n")
+
+
+@pytest.mark.parametrize(
+    ("encoding", "body", "detail"),
+    [
+        (
+            "br",
+            JOB_HTML.encode(),
+            "The server sent the page in a compression that darzi does not read.",
+        ),
+        (
+            "gzip",
+            gzip.compress(JOB_HTML.encode())[:40],
+            "The compressed page ended early.",
+        ),
+    ],
+)
+def test_cli_refused_compression_exit_1(
+    root: Path,
+    encoding: str,
+    body: bytes,
+    detail: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def packed(request: httpx.Request) -> httpx.Response:
+        headers = {"content-type": "text/html", "content-encoding": encoding}
+        return httpx.Response(200, headers=headers, stream=httpx.ByteStream(body))
+
+    _patch_fetch(monkeypatch, packed)
+    err = _failed_cli(root, URL, 1, capsys)
+    assert err.startswith(
+        "facts new-run: cannot fetch the job post (connection_failed)"
+    )
+    assert detail in err and err.endswith(PASTE + "\n")
 
 
 @pytest.mark.parametrize("url", ["", "file:///etc/hosts"])

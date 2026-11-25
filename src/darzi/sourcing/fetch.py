@@ -15,13 +15,18 @@ comes from the owner or from an agent, and the page is untrusted data:
   address that the guard tested (`pinned.py`). The TLS check and the `Host`
   header use the host name.
 - A redirect to a URL that is not valid is refused before a request is made.
-- The body is read in chunks and the read stops at the size limit. Each read
-  and each connection has a time limit.
+- The body is read in chunks and the read stops at the size limit. The limit
+  applies to the raw bytes and to the unpacked bytes of a compressed page.
+  darzi unpacks one layer of gzip or deflate itself, in small steps
+  (`unpack.py`), and refuses each other compression. Each read and each
+  connection has a time limit.
 - No link in the page is fetched. Only the redirects of the given URL are.
 
-A request sends the default headers of httpx and the User-Agent
-`darzi/<version>`. It sends no cookie of its own and no Authorization header.
-The fetch ignores the proxy settings of the environment (`trust_env=False`).
+A request sends the default headers of httpx, the User-Agent
+`darzi/<version>`, and `Accept-Encoding: gzip, deflate`, which darzi sets
+itself (so the header does not change when another package adds a codec).
+It sends no cookie of its own and no Authorization header. The fetch ignores
+the proxy settings of the environment (`trust_env=False`).
 """
 
 import codecs
@@ -37,6 +42,7 @@ import httpcore
 import httpx
 
 from darzi import __version__
+from darzi.sourcing import unpack
 from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason, FetchResult
 from darzi.sourcing.pinned import PinnedBackend, PinnedTransport
 
@@ -69,6 +75,10 @@ _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 Resolver = Callable[[str], list[str]]
 
 _INVALID_REDIRECT = "The server sent a redirect to a URL that is not valid."
+_UNSUPPORTED_ENCODING = (
+    "The server sent the page in a compression that darzi does not read."
+)
+_TRUNCATED = "The compressed page ended early."
 
 _DETAILS: dict[FetchReason, str] = {
     FetchReason.INVALID_URL: "The URL is empty or is not a valid http or https URL.",
@@ -320,7 +330,7 @@ def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
     """
     if transport is None:
         transport = PinnedTransport(PinnedBackend())
-    return httpx.Client(
+    client = httpx.Client(
         timeout=TIMEOUT,
         follow_redirects=False,
         trust_env=False,
@@ -328,12 +338,18 @@ def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
         transport=transport,
         event_hooks={"response": [_check_redirect]},
     )
+    # Set in place, so the order of the headers stays that of httpx.
+    client.headers["Accept-Encoding"] = unpack.ACCEPT_ENCODING
+    return client
 
 
 def _get(client: httpx.Client, target: httpx.URL, url: str, max_bytes: int) -> _Hop:
     """Make one GET request with a streamed body. Each failure becomes a _Hop.
 
     `target` is the URL that the guard parsed and tested; `url` is its text.
+    The compression is read after the checks of the status, the content type
+    and the declared length, and before the body is read. The raw bytes and
+    the unpacked bytes each count against `max_bytes`.
     """
     try:
         with client.stream("GET", target) as response:
@@ -356,11 +372,25 @@ def _get(client: httpx.Client, target: httpx.URL, url: str, max_bytes: int) -> _
             declared = response.headers.get("content-length", "")
             if declared.isdigit() and int(declared) > max_bytes:
                 return _Hop(failure=too_large)
+            try:
+                kind = unpack.coding(response.headers)
+            except unpack.UnsupportedEncodingError:
+                failure = _failure(
+                    FetchReason.CONNECTION_FAILED, url, _UNSUPPORTED_ENCODING
+                )
+                return _Hop(failure=failure)
+            raw = unpack.counted(response.iter_raw(), max_bytes)
             body = bytearray()
-            for chunk in response.iter_bytes():
-                body += chunk
-                if len(body) > max_bytes:
-                    return _Hop(failure=too_large)
+            try:
+                for piece in unpack.unpack(raw, kind, max_bytes):
+                    body += piece
+                    if len(body) > max_bytes:
+                        return _Hop(failure=too_large)
+            except unpack.TooLargeError:
+                return _Hop(failure=too_large)
+            except unpack.TruncatedError:
+                failure = _failure(FetchReason.CONNECTION_FAILED, url, _TRUNCATED)
+                return _Hop(failure=failure)
             return _Hop(body=bytes(body), response=response)
     except _InvalidRedirectError:
         failure = _failure(FetchReason.INVALID_URL, url, _INVALID_REDIRECT)
