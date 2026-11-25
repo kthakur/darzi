@@ -35,6 +35,7 @@ from darzi.sourcing.fetch import (
 from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason
 
 from .conftest import check_no_network
+from .net_fakes import FakeBackend, http_response
 
 PUBLIC_IP = "1.1.1.1"
 PRIVATE_IP = "127.0.0.1"
@@ -874,24 +875,18 @@ def test_the_client_ignores_proxy_settings(monkeypatch: pytest.MonkeyPatch) -> N
 def test_a_proxy_variable_does_not_send_the_fetch_to_a_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The fetch uses the real transport of httpx here, with no fake transport.
-    # Each transport records its proxy, and the request gets a fake page.
+    # The fetch uses its own pinned transport here, with no fake transport.
+    # The fake backend under the pin records each connect and gives a page.
+    # The connect goes to the pinned address of the job host, not to the proxy.
     _set_proxy_variables(monkeypatch)
-    proxies: dict[int, object] = {}
-    used: list[object] = []
-    init = httpx.HTTPTransport.__init__
-
-    def record_init(self: httpx.HTTPTransport, *args: Any, **kwargs: Any) -> None:
-        proxies[id(self)] = kwargs.get("proxy")
-        init(self, *args, **kwargs)
-
-    def handle(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
-        used.append(proxies[id(self)])
-        return _html(request)
-
-    monkeypatch.setattr(httpx.HTTPTransport, "__init__", record_init)
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
-    result = fetch(URL, resolver=_resolver())
+    page = http_response(200, JOB_HTML.encode(), [(b"content-type", b"text/html")])
+    backend = FakeBackend(answers={PUBLIC_IP: page})
+    result = fetch(URL, resolver=_resolver(), network_backend=backend)
     assert isinstance(result, FetchOk)
-    assert used == [None]
-    assert all(proxy is None for proxy in proxies.values())
+    assert backend.connects == [(PUBLIC_IP, 443)]
+    [stream] = backend.streams
+    sent = bytes(stream.written)
+    # A request to a proxy names the whole URL; a direct request names the path.
+    assert sent.startswith(b"GET /acme/designer HTTP/1.1\r\n")
+    assert b"proxy.example.com" not in sent
+    assert [tls.server_hostname for tls in stream.tls] == ["jobs.example.com"]

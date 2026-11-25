@@ -206,6 +206,9 @@ passes and the host name resolves to loopback addresses only.
 `new-run --url` makes one GET
 request and follows at most 5 redirects; at each hop, it refuses a URL that is
 not http or https and each address that is not a public internet address.
+At each hop, the fetch looks up the host name one time and connects only to an
+address that the guard tested; the TLS check and the `Host` header use the host
+name.
 
 | Command | Does | Source |
 |---|---|---|

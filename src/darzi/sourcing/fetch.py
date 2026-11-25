@@ -11,6 +11,10 @@ comes from the owner or from an agent, and the page is untrusted data:
   MAX_REDIRECTS times.
 - The guard parses each URL one time, with httpx. It resolves the same ASCII
   host name that httpx connects to, and the request uses that parsed URL.
+- At each hop, the name is looked up one time. The connection goes only to an
+  address that the guard tested (`pinned.py`). The TLS check and the `Host`
+  header use the host name.
+- A redirect to a URL that is not valid is refused before a request is made.
 - The body is read in chunks and the read stops at the size limit. Each read
   and each connection has a time limit.
 - No link in the page is fetched. Only the redirects of the given URL are.
@@ -29,10 +33,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+import httpcore
 import httpx
 
 from darzi import __version__
 from darzi.sourcing.model import FetchFailure, FetchOk, FetchReason, FetchResult
+from darzi.sourcing.pinned import PinnedBackend, PinnedTransport
 
 # trafilatura imports urllib3, which warns on stderr that PySocks is not
 # installed. darzi uses no SOCKS proxy, so ignore that one warning. The filter
@@ -62,6 +68,8 @@ _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
 Resolver = Callable[[str], list[str]]
 
+_INVALID_REDIRECT = "The server sent a redirect to a URL that is not valid."
+
 _DETAILS: dict[FetchReason, str] = {
     FetchReason.INVALID_URL: "The URL is empty or is not a valid http or https URL.",
     FetchReason.DISALLOWED_SCHEME: "Only http and https URLs can be fetched.",
@@ -86,20 +94,25 @@ def fetch(
     *,
     transport: httpx.BaseTransport | None = None,
     resolver: Resolver | None = None,
+    network_backend: httpcore.NetworkBackend | None = None,
     max_bytes: int = MAX_BODY_BYTES,
 ) -> FetchResult:
     """Fetch `url` and return the page as Markdown text, or a typed failure.
 
-    `transport` and `resolver` are for the tests: a fake transport and a fake
-    name lookup. The CLI does not pass them, so the fetch uses the network and
-    the system name lookup.
+    `transport`, `resolver` and `network_backend` are for the tests: a fake
+    transport, a fake name lookup, and a fake backend that the pin wraps (the
+    pin always applies to it). A fake transport replaces the pinned transport.
+    The CLI passes none of them, so the fetch uses the system name lookup and
+    connects only to the addresses that the guard tested.
     """
     resolve = resolver if resolver is not None else _system_resolver
     url = url.strip()
     if not url:
         return _failure(FetchReason.INVALID_URL, url)
     try:
-        return _fetch(url, transport, resolve, max_bytes)
+        return _fetch(
+            url, transport, PinnedBackend(network_backend), resolve, max_bytes
+        )
     except Exception as exc:  # noqa: BLE001 - the last catch: fetch() never raises.
         detail = f"The fetch failed with an unexpected error ({type(exc).__name__})."
         return _failure(FetchReason.CONNECTION_FAILED, url, detail)
@@ -108,17 +121,28 @@ def fetch(
 def _fetch(
     url: str,
     transport: httpx.BaseTransport | None,
+    backend: PinnedBackend,
     resolve: Resolver,
     max_bytes: int,
 ) -> FetchResult:
-    """Do the work of fetch(). The specific failures become typed results here."""
-    with _client(transport) as client:
+    """Do the work of fetch(). The specific failures become typed results here.
+
+    At each hop, the guard looks up the host name one time. The backend is
+    pinned to the addresses that the guard accepted, for this hop only.
+    """
+    with _client(
+        transport if transport is not None else PinnedTransport(backend)
+    ) as client:
         current = url
         for _ in range(MAX_REDIRECTS + 1):
             checked = _guard(current, resolve)
             if isinstance(checked, FetchReason):
                 return _failure(checked, current)
-            hop = _get(client, checked, current, max_bytes)
+            backend.pin(checked.host, checked.addresses)
+            try:
+                hop = _get(client, checked.url, current, max_bytes)
+            finally:
+                backend.clear()
             if hop.failure is not None:
                 return hop.failure
             if hop.location is not None:
@@ -140,31 +164,34 @@ def check_url(url: str, resolver: Resolver) -> FetchReason | None:
 
     The guard refuses a scheme that is not http or https, a URL with user-info,
     and a host with an address that is not a public internet address (see
-    `is_blocked`). It tests each address that the name lookup gives.
-
-    Known gap: the guard looks up the host name, and then httpx looks up the
-    name again when it connects. A name server can give a public address to
-    the guard and a private address to httpx (DNS rebinding). A connection that
-    uses only the tested address closes this gap; that is a later work item.
+    `is_blocked`). It tests each address that the name lookup gives. The
+    fetch then connects only to one of these addresses (`pinned.py`).
     """
     checked = _guard(url, resolver)
     return checked if isinstance(checked, FetchReason) else None
 
 
-def _guard(url: str, resolver: Resolver) -> httpx.URL | FetchReason:
-    """Return the parsed URL when `url` can be fetched, else the reason.
+@dataclass(frozen=True)
+class _Tested:
+    """A URL that the guard accepted: the parsed URL, its host, its addresses."""
+
+    url: httpx.URL
+    host: str
+    addresses: tuple[str, ...]
+
+
+def _guard(url: str, resolver: Resolver) -> _Tested | FetchReason:
+    """Return the tested URL when `url` can be fetched, else the reason.
 
     The URL is parsed one time, with httpx, and the request uses this parsed
     URL. The guard resolves the ASCII host name that httpx connects to. When
     the standard library reads a different host name from the same text (for
     example, IDNA 2003 and IDNA 2008 encode some letters differently), the URL
-    is refused.
+    is refused. The result holds the addresses of the one name lookup.
     """
     try:
         parsed = httpx.URL(url)
-        host = parsed.raw_host.decode("ascii")
-        # Decode the host name too: a bad punycode label raises here.
-        parsed.host  # noqa: B018
+        host = _ascii_host(parsed)
     except (httpx.InvalidURL, ValueError):
         return FetchReason.INVALID_URL
     if parsed.scheme not in _SCHEMES:
@@ -186,7 +213,15 @@ def _guard(url: str, resolver: Resolver) -> httpx.URL | FetchReason:
         return FetchReason.UNRESOLVABLE
     if any(is_blocked(address) for address in addresses):
         return FetchReason.BLOCKED_ADDRESS
-    return parsed
+    return _Tested(url=parsed, host=host, addresses=tuple(addresses))
+
+
+def _ascii_host(parsed: httpx.URL) -> str:
+    """Return the ASCII host of `parsed`. Raise ValueError when it is not valid."""
+    host = parsed.raw_host.decode("ascii")
+    # Decode the host name too: a bad punycode label raises here.
+    parsed.host  # noqa: B018
+    return host
 
 
 def _stdlib_host(url: str) -> str | None:
@@ -251,19 +286,47 @@ class _Hop:
     response: httpx.Response | None = None
 
 
+class _InvalidRedirectError(Exception):
+    """The response hook found a redirect to a URL that is not valid."""
+
+
+def _check_redirect(response: httpx.Response) -> None:
+    """Refuse a redirect to a URL that is not valid, before httpx reads it.
+
+    httpx builds the next request of a redirect itself, also when it does not
+    follow it, and a bad host name in `Location` (for example a bad punycode
+    label) raises there. This hook runs first, with the parse step of the
+    guard and no name lookup. An empty target stays a BAD_REDIRECT.
+    """
+    if not response.has_redirect_location:
+        return
+    location = response.headers["location"]
+    if not location.strip():
+        return
+    for text in (location, location.strip()):
+        try:
+            _ascii_host(response.request.url.join(text))
+        except (httpx.InvalidURL, ValueError):
+            raise _InvalidRedirectError from None
+
+
 def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
     """Return a client that does not follow redirects (fetch() does that).
 
     The client ignores the proxy settings of the environment
     (`trust_env=False`), as the clients of `doctor` do. So the request goes
-    to the host that the guard tested, not to a proxy.
+    to the host that the guard tested, not to a proxy. With no `transport`,
+    the client gets a pinned transport with no pin, which refuses each connect.
     """
+    if transport is None:
+        transport = PinnedTransport(PinnedBackend())
     return httpx.Client(
         timeout=TIMEOUT,
         follow_redirects=False,
         trust_env=False,
         headers={"User-Agent": USER_AGENT},
         transport=transport,
+        event_hooks={"response": [_check_redirect]},
     )
 
 
@@ -299,6 +362,9 @@ def _get(client: httpx.Client, target: httpx.URL, url: str, max_bytes: int) -> _
                 if len(body) > max_bytes:
                     return _Hop(failure=too_large)
             return _Hop(body=bytes(body), response=response)
+    except _InvalidRedirectError:
+        failure = _failure(FetchReason.INVALID_URL, url, _INVALID_REDIRECT)
+        return _Hop(failure=failure)
     except httpx.TimeoutException:
         return _Hop(failure=_failure(FetchReason.TIMEOUT, url))
     except httpx.HTTPError as exc:
