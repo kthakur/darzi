@@ -1,6 +1,6 @@
 [project]
 name = "darzi"
-version = "0.2.0"
+version = "0.2.1"
 description = "Turns a job post into a checked, approved résumé and cover letter."
 readme = "README.md"
 license = "MIT"

@@ -42,6 +42,7 @@ class FakeStream(httpcore.NetworkStream):
     answer: bytes
     written: bytearray = field(default_factory=bytearray)
     tls: list[TlsStart] = field(default_factory=lambda: [])
+    closed: bool = False
 
     def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
         chunk, self.answer = self.answer[:max_bytes], self.answer[max_bytes:]
@@ -51,7 +52,7 @@ class FakeStream(httpcore.NetworkStream):
         self.written += buffer
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
     def start_tls(
         self,

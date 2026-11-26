@@ -54,10 +54,10 @@ give `--repo PATH`.
 | `allowed_signers` | Your public approval key | You |
 
 The data root installs darzi from this repo at a release tag, for example
-`v0.2.0` (`<owner>` is the account that holds this repo):
+`v0.2.1` (`<owner>` is the account that holds this repo):
 
 ```sh
-uv add "darzi @ git+https://github.com/<owner>/darzi@v0.2.0"
+uv add "darzi @ git+https://github.com/<owner>/darzi@v0.2.1"
 ```
 
 After a new tag, change the tag in the `pyproject.toml` of the data root.
@@ -314,10 +314,10 @@ item must be there, in the approved order.
   address. It follows at most 5 redirects and checks each one.
 - **No proxy:** the fetch ignores the proxy settings of the environment
   (`HTTPS_PROXY` and the others). It connects to the job site directly.
-- **Limit:** a login page can return text. Read `job.md`. If it is not the
-  job post, paste the text.
+- **Limit:** a login page can return text. Read `job.md`. If it is not the job post, paste the text.
 - **Limit:** a page can be at most 5 MiB, also after the fetch unpacks it. A page in a
   compression other than gzip or deflate is refused. Then paste the text.
+- **Limit:** each read waits at most 10 seconds; the whole fetch has no time limit.
 
 ### The fit rating
 

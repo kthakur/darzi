@@ -209,8 +209,8 @@ not http or https and each address that is not a public internet address.
 At each hop, the fetch looks up the host name one time and connects only to an
 address that the guard tested; the TLS check and the `Host` header use the host
 name. The page can be at most 5 MiB, both as it arrives and after the fetch
-unpacks it; the fetch accepts no compression or one layer of gzip or deflate,
-and refuses each other compression.
+unpacks it; the fetch accepts no compression or one layer of gzip (also
+named x-gzip) or deflate, and refuses each other compression.
 
 | Command | Does | Source |
 |---|---|---|

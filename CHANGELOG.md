@@ -1,44 +1,66 @@
 # Changes
 
-## Unreleased
+## 0.2.1 (25 November 2026)
 
-Small corrections. No check rule, hash or file format changes.
+A safer fetch of a job page, and clearer messages. No check rule, hash or file
+format changes. Some inputs that 0.2.0 accepted, or that stopped it with a
+traceback, are now refused with a short message. They are listed below.
 
-- `facts finalize` and `facts render RUN --draft` refuse a `print_settings`
-  level outside 1 to 5 with one short line and exit code 2, before they build
-  a file. Before, `finalize` stopped with a traceback.
-- `facts render RUN --draft` now uses the whole print-settings check of
-  `finalize`: it also refuses a margin that is not a whole number, with the
-  same message.
-- `facts check`, `export`, `public` and `query` refuse a `rules.yaml` value of
-  the wrong kind (for example `terms: null`) with a short line that names the
-  key and the expected kind. Before, they stopped with a traceback.
-- The `facts` commands no longer print a warning about SOCKS support on stderr.
-- The run lock message names `fit`, which also takes the lock.
-- The `approve` message for a bad signer or namespace in `facts.toml` says
-  which characters are permitted.
+### The fetch of `facts new-run --url`
+
+- The fetch looks up the host name one time at each hop and connects only to
+  an address that the guard tested. Before, the web library looked up the name
+  a second time, and that lookup could give a different address.
+- The fetch unpacks a compressed page itself, in small steps, and stops at the
+  5 MiB size limit. Before, a small compressed page could unpack to many
+  megabytes in memory first. The limit also applies to the bytes as they
+  arrive.
+- The fetch accepts no compression or one layer of gzip (also named `x-gzip`)
+  or deflate. A page that the server marks `x-gzip` is now unpacked as gzip.
+- New refusals:
+  - A redirect to a URL that is not valid (for example a bad international
+    host name, or a port that is not a number) gives `invalid_url` and exit
+    code 2. No request goes to it. Before, it gave `connection_failed` and
+    exit code 1.
+  - These pages give `connection_failed` and exit code 1: a page in a
+    compression that darzi does not read (for example `br` or `zstd`), a page
+    in two or more layers of compression, and a compressed page that ends
+    early. Before, darzi read the first two as text or unpacked each layer
+    with no limit, and it used the part of the third that arrived.
+
+### Clearer messages and clean-ups
+
+- New refusals, each with one short line and exit code 2 in place of a
+  traceback:
+  - `facts finalize` and `facts render RUN --draft`: a `print_settings` level
+    outside 1 to 5, before they build a file.
+  - `facts render RUN --draft`: a margin that is not a whole number. It now
+    uses the whole print-settings check of `finalize`, with the same message.
+  - `facts check`, `export`, `public` and `query`: a `rules.yaml` value of the
+    wrong kind (for example `terms: null`). The line names the key and the
+    expected kind.
+  - `facts export`, `public` and `query`: a list in `privacy_patterns.regex`.
+    Write it as a mapping of name to pattern.
 - A named pipe at the path of a lock file is refused at once. Before, the
   command waited with no end.
 - A job page with a charset that cannot decode the page (for example
   `punycode`) is read as UTF-8.
-- The hint for a `rules.yaml` entry that is not a mapping no longer names
-  `id` and `severity` in commands that do not read them.
+- The `facts` commands no longer print a warning about SOCKS support on
+  stderr.
+- Clearer texts: the run lock message names `fit`, which also takes the lock;
+  the `approve` message for a bad signer or namespace in `facts.toml` says
+  which characters are permitted; the hint for a `rules.yaml` entry that is
+  not a mapping names `id` and `severity` only where the command reads them.
 - Small clean-ups in the code and in the apply workflow text.
-- The fetch of `new-run --url` looks up the host name one time at each hop and
-  connects only to an address that the guard tested.
-- A redirect to a URL that is not valid (for example a bad international host
-  name) now gives `invalid_url` and exit code 2. Before, it gave
-  `connection_failed` and exit code 1. No request goes to it.
-- The fetch of `new-run --url` unpacks a compressed page itself, in small
-  steps, and stops at the 5 MiB size limit. Before, a small compressed page
-  could unpack to many megabytes in memory first. The limit also applies to
-  the bytes as they arrive.
-- The fetch now refuses three kinds of page with `connection_failed` and exit
-  code 1: a page in a compression that darzi does not read (for example `br`
-  or `zstd`), a page in two or more layers of compression, and a compressed
-  page that ends early. Before, darzi read the first two as text or unpacked
-  each layer with no limit, and it used the part of the third that arrived.
-  A page that the server marks `x-gzip` is now unpacked as gzip.
+
+### Not in this release
+
+- The whole fetch has no time limit. Each connect waits at most 5 seconds and
+  each read at most 10 seconds, but a very slow site can keep a fetch running.
+- Small internal points from the reviews wait for a later version. None of
+  them changes what a command does.
+- The limits of the checks are as in 0.2.0: read the README part "Limits of
+  each step".
 
 ## 0.2.0 (18 November 2026)
 

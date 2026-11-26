@@ -817,10 +817,11 @@ def test_cli_time_out_exit_1(
         ),
         (
             "gzip",
-            gzip.compress(JOB_HTML.encode())[:40],
+            gzip.compress(JOB_HTML.encode(), mtime=0)[:40],
             "The compressed page ended early.",
         ),
     ],
+    ids=["br", "gzip-ends-early"],
 )
 def test_cli_refused_compression_exit_1(
     root: Path,
@@ -959,3 +960,4 @@ def test_a_proxy_variable_does_not_send_the_fetch_to_a_proxy(
     assert sent.startswith(b"GET /acme/designer HTTP/1.1\r\n")
     assert b"proxy.example.com" not in sent
     assert [tls.server_hostname for tls in stream.tls] == ["jobs.example.com"]
+    assert stream.closed
