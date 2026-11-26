@@ -23,6 +23,7 @@ from darzi.schemas import RULES, load_schema
 
 from .checking import tailored, write_run
 from .conftest import DATA
+from .test_fit import JOB, RUN, good, write
 
 SELECTION = Path("selections") / "corporate-tech.yaml"
 NO_MAP: dict[str, Any] = {"entries": []}
@@ -116,10 +117,16 @@ def _run(command: str, root: Path, tmp_path: Path) -> int:
     if command == "export":
         out = tmp_path / "run"
         return main(["export", str(root / SELECTION), "--run", str(out), *repo])
+    if command == "fit":
+        (root / "applications" / RUN / "job.md").write_text(JOB, encoding="utf-8")
+        write(root, good())
+        return main(["fit", str(root / "applications" / RUN), *repo])
     return main([command, *repo])
 
 
-@pytest.mark.parametrize("command", ["check RUN", "export", "public", "query"])
+@pytest.mark.parametrize(
+    "command", ["check RUN", "export", "public", "query", "answers", "fit"]
+)
 @pytest.mark.parametrize("value", [None, 5, "word"], ids=["null", "number", "text"])
 def test_the_commands_refuse_a_wrong_kind(
     root: Path,
@@ -239,7 +246,7 @@ def test_a_list_of_privacy_patterns_for_the_public_copy() -> None:
     assert str(caught.value) == LIST_REGEX
 
 
-@pytest.mark.parametrize("command", ["export", "public", "query"])
+@pytest.mark.parametrize("command", ["export", "public", "query", "answers", "fit"])
 def test_the_commands_refuse_a_list_of_privacy_patterns(
     root: Path,
     tmp_path: Path,

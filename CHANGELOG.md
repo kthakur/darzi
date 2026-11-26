@@ -30,17 +30,24 @@ traceback, are now refused with a short message. They are listed below.
 
 ### Clearer messages and clean-ups
 
-- New refusals, each with one short line and exit code 2 in place of a
-  traceback:
+- New refusals, each with one short line and exit code 2. Before, the command
+  stopped with a traceback or accepted the value:
   - `facts finalize` and `facts render RUN --draft`: a `print_settings` level
-    outside 1 to 5, before they build a file.
+    outside 1 to 5, before they build a file. Before, `finalize` stopped with a
+    traceback when it built the Word file, and the draft did not test it.
   - `facts render RUN --draft`: a margin that is not a whole number. It now
     uses the whole print-settings check of `finalize`, with the same message.
-  - `facts check`, `export`, `public` and `query`: a `rules.yaml` value of the
-    wrong kind (for example `terms: null`). The line names the key and the
-    expected kind.
-  - `facts export`, `public` and `query`: a list in `privacy_patterns.regex`.
-    Write it as a mapping of name to pattern.
+    Before, the draft did not test it.
+  - `facts check RUN`, `export`, `public`, `query`, `answers`, `fit`,
+    `fill-plan` and `finalize` (also with `--handover`): a `rules.yaml` value of
+    the wrong kind (for example `removed_items.terms: null`). The line names the
+    key and the expected kind. Before, with `removed_items.terms: null`,
+    `answers` and `fill-plan` accepted it, and the other commands stopped with a
+    traceback.
+  - `facts export`, `public`, `query`, `answers`, `fit`, `fill-plan` and
+    `finalize --handover`: a list in `privacy_patterns.regex`. Write it as a
+    mapping of name to pattern. Before, these commands stopped with a
+    traceback.
 - A named pipe at the path of a lock file is refused at once. Before, the
   command waited with no end.
 - A job page with a charset that cannot decode the page (for example
